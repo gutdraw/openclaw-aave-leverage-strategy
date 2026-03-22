@@ -57,7 +57,7 @@ The file is gitignored — it contains your wallet address.
 | `moderate_signal_size` | float | `0.5` | Multiplier for a moderate signal. |
 | `take_profit_pct` | float | `0.05` | Close when asset is up this % from entry (0.05 = 5%). |
 | `stop_loss_pct` | float | `0.03` | Close when asset is down this % from entry (0.03 = 3%). |
-| `max_usdc_supply_apy` | float | `3.0` | DeFi Llama USDC supply APY threshold. Above this = suppress entries. |
+| `max_borrow_apr` | float | `8.0` | USDC borrow APR threshold from `get_position`. Above this = suppress entries. |
 | `max_volatility_1h` | float | `5.0` | Skip entire cycle if 1h move exceeds this % in either direction. |
 | `btc_dominance_rise_threshold` | float | `2.0` | Suppress longs if BTC dominance rose more than this % since last cycle. |
 | `hf_reduce_threshold` | float | `1.35` | Call `prepare_reduce` if health factor falls below this. |
@@ -94,19 +94,21 @@ Fields to extract:
 
 > Note: 4h data is not available on the CoinGecko free tier. This skill uses 1h / 24h / 7d.
 
-### Source 2 — DeFi Llama USDC borrow cost proxy (required)
+### Source 2 — Aave borrow rate (via get_position)
 
 ```
-GET https://yields.llama.fi/pools
+get_position(user_address)
 ```
 
-Filter the response array for: `project == "aave-v3" && chain == "Base" && symbol == "USDC"`
+The `get_position` tool now returns live Aave interest rates directly from the chain.
+No external API call needed — this is the real borrow APR, not a proxy.
 
-Field to extract: `apyBase` (USDC supply APY %)
+Field to extract: `rates.USDC.borrowApy` (USDC variable borrow APR %)
 
-This is a proxy for the USDC borrow APR. The real borrow APR is typically 1.5–3x the supply APY
-depending on utilization. The no-trade filter (`max_usdc_supply_apy: 3.0`) is calibrated
-accordingly — supply APY above 3% implies borrow conditions are elevated.
+Also available: `rates.WETH.borrowApy`, `rates.WETH.supplyApy`, `rates.USDC.carryCost`, etc.
+
+This replaces the previous DeFi Llama proxy method. The no-trade filter
+(`max_borrow_apr`) is now compared directly against `rates.USDC.borrowApy`.
 
 ### Source 3 — CoinGecko BTC dominance (required)
 
@@ -122,33 +124,12 @@ If no prior cycle exists, skip this filter for the first run.
 
 ### Fallback behavior
 
-- If any single source fails (network error, timeout, unexpected response): log which
-  source failed in the cycle entry (`"sources_failed": ["defillama"]`), continue with
-  the remaining sources, and note the missing component in the `reason` field.
+- If any single source fails: log which source failed in the cycle entry
+  (`"sources_failed": ["coingecko_global"]`), continue with remaining sources.
 - If fewer than 2 sources succeed: write a cycle entry with
   `"decision": "skip_insufficient_data"` and exit without acting.
-
----
-
-## Borrow rate — precise method (optional)
-
-The DeFi Llama proxy is fast but approximate. For the real USDC variable borrow APR
-from Aave v3 Base, use `cast` if Foundry is installed:
-
-```bash
-cast call 0x2d8A3C5677189723C4cB8873CfC9C8976ddf54D8 \
-  "getReserveData(address)(uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint40)" \
-  0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
-  --rpc-url https://mainnet.base.org
-```
-
-The 5th return value is `currentVariableBorrowRate` in Ray units (1e27).
-Divide by 1e25 to get the APR as a percentage.
-
-Example: `45000000000000000000000000` Ray → divide by 1e25 → `4.5%` APR.
-
-Use this method when you want to verify the DeFi Llama proxy or set a more
-precise threshold. The skill defaults to the proxy method.
+- Note: `get_position` is always called if a position is open (Step 6) — if it fails,
+  treat it as a hard stop and exit without acting regardless of other sources.
 
 ---
 
@@ -175,7 +156,7 @@ Example: ETH is +0.8% (1h), +1.2% (24h), -0.5% (7d) → 2 positives → `moderat
 - Why: entering a leveraged position into a 1h spike is high-risk in both directions
 
 **Filter 2 — Elevated borrow cost** (suppresses all new entries)
-- Trigger: `usdc_supply_apy > max_usdc_supply_apy`
+- Trigger: `rates.USDC.borrowApy > max_borrow_apr` (from `get_position` response)
 - Action: set decision to `hold` or `no_trade`, log `"filters_triggered": ["borrow_cost"]`
 - Why: high carry cost reduces the edge needed to profit; wait for rates to normalize
 
@@ -203,7 +184,7 @@ seed_usd = total_collateral_usd * base_position_pct * signal_multiplier
 
 Where:
 - `total_collateral_usd` — from `get_position` response. If no position open and no
-  collateral in Aave, use the USD value of the target asset token balance in the wallet.
+  collateral in Aave, use `balances.<asset>.usd` from the same response.
 - `signal_multiplier` — `strong_signal_size` (default 1.0) for `strong_long`,
   `moderate_signal_size` (default 0.5) for `moderate_long`
 
@@ -331,7 +312,7 @@ Each line is a self-contained JSON object. Two entry types:
   "price_change_24h": 1.2,
   "price_change_7d": 3.1,
   "trend_score": "strong_long",
-  "usdc_supply_apy": 2.58,
+  "usdc_borrow_apr": 4.2,
   "btc_dominance_pct": 56.3,
   "btc_dominance_prev": 55.8,
   "volatility_1h_abs": 0.8,
