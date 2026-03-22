@@ -459,6 +459,19 @@ in `trades.jsonl` as if they executed at the current market price.
 
 ---
 
+## Wallet security
+
+This skill executes transactions autonomously and unattended. Key management matters more here than in interactive use.
+
+- **Use a dedicated bot wallet** — never run this strategy from your main wallet. Create a separate address used only for this bot. If a signal goes wrong or a bug causes an unexpected trade, the damage is limited to that wallet.
+- **Never put your private key in any file in this repo** — not in `config.yml`, not in `mcp-config.json`, not anywhere on disk in plaintext. Your private key belongs only in OpenClaw's secure key store.
+- **Minimum funding principle** — only bridge what you need: enough collateral for your `base_position_pct` position size, plus a small ETH buffer for gas (~$2–5 on Base). Do not park savings in the bot wallet.
+- **`user_address` is a public address** — safe to store in `config.yml` and MCP headers. It is not a secret.
+- **Revoke approvals after closing** — the `prepare_open` flow grants `uint256 max` ERC20 approval to the router. After fully closing a position, revoke it using Revoke.cash on Base (`https://revoke.cash`). The autonomous flow does not do this automatically.
+- **Monitor the wallet** — set up a balance alert (e.g. via Etherscan or a simple on-chain monitor) so you know if the bot wallet is unexpectedly drained.
+
+---
+
 ## Safety and hard limits
 
 The following limits cannot be overridden by `config.yml`:
