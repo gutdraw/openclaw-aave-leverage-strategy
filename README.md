@@ -10,7 +10,7 @@
 - [aave-leverage](https://github.com/gutdraw/openclaw-aave-leverage) skill installed and active
 - OpenClaw with MCP + cron support
 - Node.js >= 18 (for quote verification)
-- USDC on Base for x402 session payment — recommend a weekly session ($0.50) for unattended use
+- USDC on Base for x402 session payment — recommend a monthly session ($4.00) for unattended cron use
 
 ---
 
@@ -123,7 +123,7 @@ After validating with paper trading:
 
 1. Review your `trades.jsonl` — check win rate, avg P&L, and that all exit types appear
 2. Confirm you have enough WETH/cbBTC/USDC on Base to fund positions
-3. Confirm you have enough USDC on Base for the x402 MCP session
+3. Confirm you have enough USDC on Base for the x402 MCP session ($4.00/month recommended)
 4. Edit `config.yml`:
    ```yaml
    paper_trading: false

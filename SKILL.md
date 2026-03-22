@@ -47,18 +47,21 @@ x402 payment protocol — sessions are paid in USDC on Base and are wallet-bound
 
 **Pricing:**
 
-| Duration | Cost |
-|----------|------|
-| 1 hour   | $0.01 |
-| 1 day    | $0.10 |
-| 1 week   | $0.50 |
+| Duration | Cost  | Best for |
+|----------|-------|----------|
+| 1 hour   | $0.05 | Testing, one-shot cycles |
+| 1 day    | $0.25 | Short-term runs |
+| 1 week   | $1.50 | Active monitoring |
+| 1 month  | $4.00 | Production bots, cron jobs |
 
-**Recommended for autonomous use: weekly session ($0.50)**
+**Recommended for autonomous use: monthly session ($4.00)**
 
-A cron running every 15 minutes makes ~672 tool calls per week. An hourly session
-($0.01) expires between runs and triggers a new payment on every cycle where the
-session has lapsed. Buy a weekly session before starting the bot to avoid repeated
-micro-payments and potential failed cycles due to payment confirmation delays.
+A cron running every 15 minutes makes ~2,880 tool calls per month. The monthly pass
+at $4.00 is the most cost-effective option — it covers the full billing period for
+less than three weekly passes. An hourly session ($0.05) expires between runs and
+triggers a new payment on every cycle where the session has lapsed. Buy a monthly
+session before starting the bot to avoid repeated micro-payments and potential failed
+cycles due to payment confirmation delays.
 
 **How x402 works:**
 
@@ -69,7 +72,7 @@ from the bot wallet, submits it on-chain, and retries once confirmed. This adds
 
 **Pre-run checklist:**
 
-- Bot wallet has USDC on Base (at minimum $0.50 for a weekly session)
+- Bot wallet has USDC on Base (at minimum $4.00 for a monthly session; $1.50 for weekly)
 - Bot wallet has ETH on Base for gas (~$2–5 is sufficient for weeks of runs)
 - `X-Wallet-Address` in `mcp-config.json` matches the bot wallet
 
