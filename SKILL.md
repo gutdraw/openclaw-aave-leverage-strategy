@@ -40,6 +40,54 @@ toward the dominant trend. For manual short execution, use the base `aave-levera
 
 ---
 
+## MCP session and x402 payments
+
+This skill calls the `aave-leverage` MCP server on every cycle. The server uses the
+x402 payment protocol — sessions are paid in USDC on Base and are wallet-bound.
+
+**Pricing:**
+
+| Duration | Cost |
+|----------|------|
+| 1 hour   | $0.01 |
+| 1 day    | $0.10 |
+| 1 week   | $0.50 |
+
+**Recommended for autonomous use: weekly session ($0.50)**
+
+A cron running every 15 minutes makes ~672 tool calls per week. An hourly session
+($0.01) expires between runs and triggers a new payment on every cycle where the
+session has lapsed. Buy a weekly session before starting the bot to avoid repeated
+micro-payments and potential failed cycles due to payment confirmation delays.
+
+**How x402 works:**
+
+On the first tool call after a session expires, the MCP server returns HTTP 402
+(Payment Required). OpenClaw handles this automatically — it signs a USDC transfer
+from the bot wallet, submits it on-chain, and retries once confirmed. This adds
+~10–30s to that cycle. All subsequent calls in the session are instant.
+
+**Pre-run checklist:**
+
+- Bot wallet has USDC on Base (at minimum $0.50 for a weekly session)
+- Bot wallet has ETH on Base for gas (~$2–5 is sufficient for weeks of runs)
+- `X-Wallet-Address` in `mcp-config.json` matches the bot wallet
+
+**If a cycle fails due to payment error:**
+
+The cycle log entry will record `"decision": "skip_payment_error"`. This is not a
+trading decision — it means the session expired and OpenClaw could not complete
+payment (most likely insufficient USDC). Top up the bot wallet and the next cycle
+will trigger a fresh session payment automatically.
+
+**What the agent must NOT do on payment failure:**
+
+- Do not retry the tool call in the same cycle — the payment confirmation may still be pending
+- Do not open or close positions if `get_position` hasn't returned successfully
+- Write the cycle entry and exit; the next scheduled run will recover
+
+---
+
 ## Configuration
 
 All parameters live in `config.yml` next to this skill. Edit before your first run.

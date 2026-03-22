@@ -10,7 +10,7 @@
 - [aave-leverage](https://github.com/gutdraw/openclaw-aave-leverage) skill installed and active
 - OpenClaw with MCP + cron support
 - Node.js >= 18 (for quote verification)
-- USDC on Base for x402 session payment (the MCP server charges $0.01/hr)
+- USDC on Base for x402 session payment — recommend a weekly session ($0.50) for unattended use
 
 ---
 
