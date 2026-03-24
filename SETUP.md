@@ -19,7 +19,7 @@ pip install -r requirements.txt
 Copy and edit the config file:
 
 ```bash
-cp config.yml my-config.yml
+cp config.example.yml my-config.yml
 ```
 
 Set the required fields:

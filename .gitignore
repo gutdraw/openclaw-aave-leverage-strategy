@@ -3,6 +3,7 @@ trades.jsonl
 config_changes.jsonl
 config.yml
 my-config.yml
+!config.example.yml
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

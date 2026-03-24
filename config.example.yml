@@ -1,0 +1,62 @@
+# aave-leverage-strategy config
+# Edit these values before your first run.
+# WARNING: This file contains your wallet address — do not commit it.
+
+# ---------------------------------------------------------------
+# PAPER TRADING (default: true)
+# Set to false only after validating with at least 20 paper cycles.
+# ---------------------------------------------------------------
+paper_trading: true
+
+# ---------------------------------------------------------------
+# ASSET TO TRADE
+# One position at a time. Change asset + position_id together.
+# ---------------------------------------------------------------
+asset: "WETH"               # WETH | cbBTC | wstETH  (long collateral)
+position_id: "WETH/USDC"    # WETH/USDC | cbBTC/USDC | wstETH/WETH
+
+short_borrow_asset: "WETH"  # asset to short (borrow) — WETH or cbBTC
+short_position_id: "USDC/WETH"  # USDC/WETH | USDC/cbBTC
+
+user_address: "0xYOUR_BOT_WALLET_ADDRESS"
+
+# ---------------------------------------------------------------
+# MCP SERVER CONNECTION
+# Get your session token by calling POST /mcp/auth (see SETUP.md)
+# ---------------------------------------------------------------
+mcp_url: "https://aave-leverage-agent-production.up.railway.app"
+mcp_session_token: ""     # paste token here — refresh weekly
+private_key: ""           # live mode only — prefer env var PRIVATE_KEY, never commit
+
+# ---------------------------------------------------------------
+# POSITION SIZING
+# seed_usd = wallet_balance_usd x base_position_pct x signal_multiplier
+# ---------------------------------------------------------------
+leverage: 3.0
+max_leverage: 4.0
+base_position_pct: 0.20     # use 20% of wallet collateral balance as base seed
+strong_signal_size: 1.0     # multiplier for strong signal (all 3 timeframes aligned)
+moderate_signal_size: 0.5   # multiplier for moderate signal (2/3 timeframes aligned)
+
+# ---------------------------------------------------------------
+# EXIT THRESHOLDS
+# Based on % move in the underlying asset from entry price.
+# ---------------------------------------------------------------
+take_profit_pct: 0.05       # close when asset is up 5% from entry
+stop_loss_pct: 0.03         # close when asset is down 3% from entry
+
+# ---------------------------------------------------------------
+# NO-TRADE FILTERS
+# These suppress new entries when conditions are unfavorable.
+# ---------------------------------------------------------------
+max_borrow_apr: 8.0         # skip entries if USDC borrow APR > 8% (from get_position rates)
+max_volatility_1h: 5.0      # skip the entire cycle if 1h price move > 5% (spike risk)
+btc_dominance_rise_threshold: 2.0  # suppress longs if BTC dominance rose > 2% since last cycle
+
+# ---------------------------------------------------------------
+# RISK GUARDRAILS
+# These trigger defensive actions on an open position.
+# ---------------------------------------------------------------
+hf_defense_reduce: 1.35     # call prepare_reduce if health factor drops below this
+hf_defense_close: 1.20      # force close if health factor drops below this
+min_open_hf: 1.30           # don't open a new position if projected HF would be below this
