@@ -34,13 +34,36 @@ paper_trading: true                    # start in paper mode
 
 ## 3. Get an MCP session token
 
+The MCP server charges a small USDC fee on Base for API access. The `buy_session.py`
+script handles the full payment flow (EIP-3009 signature → on-chain settlement → token).
+
+**Requirements:** your bot wallet needs USDC on Base.
+- Bridge from Ethereum: https://bridge.base.org
+- Buy directly on Base via Coinbase or any Base DEX
+
 ```bash
-curl -X POST https://aave-leverage-agent-production.up.railway.app/mcp/auth \
-  -H "Content-Type: application/json" \
-  -d '{"wallet_address": "0xYOUR_BOT_WALLET", "duration": "1week"}'
+# Set your private key as an env var (never paste it into commands)
+export PRIVATE_KEY=0xYOUR_PRIVATE_KEY
+
+# Purchase a 1-week session ($1.50 USDC) and write token directly into config
+python3.12 scripts/buy_session.py \
+  --wallet 0xYOUR_BOT_WALLET \
+  --duration week \
+  --config my-config.yml
 ```
 
-The server returns an HTTP 402 with x402 payment details. Pay $1.50 USDC on Base to receive your token. Paste it into `config.yml`.
+The script will print the token and write it to `my-config.yml` automatically.
+
+**Duration options:**
+
+| Duration | Price | Best for |
+|---|---|---|
+| `hour` | $0.05 | Quick test |
+| `day` | $0.25 | Daily use |
+| `week` | $1.50 | Running bots |
+| `month` | $4.00 | Production |
+
+Tokens are wallet-bound and stateless — renew before expiry by re-running the script.
 
 ## 4. Run in paper mode (recommended first)
 
