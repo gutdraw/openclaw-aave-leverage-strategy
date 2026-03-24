@@ -43,6 +43,7 @@ class BotConfig:
 
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True
+    paper_seed_usd: float = 0.0   # if > 0, use this as collateral in paper mode (no real funds needed)
     trades_file: str = "trades.jsonl"
 
     @classmethod

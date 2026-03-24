@@ -35,7 +35,12 @@ def compute(
 
     Returns a zero-size PositionSize when signal.multiplier == 0 (no-trade signal).
     """
-    seed_usd = total_collateral_usd * cfg.base_position_pct * signal.multiplier
+    effective_collateral = (
+        cfg.paper_seed_usd
+        if cfg.paper_trading and cfg.paper_seed_usd > 0
+        else total_collateral_usd
+    )
+    seed_usd = effective_collateral * cfg.base_position_pct * signal.multiplier
 
     if seed_usd <= 0 or price <= 0:
         return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)

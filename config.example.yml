@@ -7,6 +7,7 @@
 # Set to false only after validating with at least 20 paper cycles.
 # ---------------------------------------------------------------
 paper_trading: true
+paper_seed_usd: 10000    # simulated collateral for paper mode — set to 0 to use real Aave balance
 
 # ---------------------------------------------------------------
 # ASSET TO TRADE
