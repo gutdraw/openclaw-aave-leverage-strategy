@@ -27,16 +27,49 @@ but no on-chain transactions are submitted until you explicitly go live.
 | HF defense | Auto-reduce at HF < 1.35, auto-close at HF < 1.20 |
 | TP / SL | Configurable % from entry, checked every cycle |
 
-## Supported assets
+## Supported assets and directions
 
-| Asset | Strategy | Max leverage |
-|-------|----------|--------------|
-| WETH | Long (supply WETH, borrow USDC) | 4.5x (config cap: 3x) |
-| cbBTC | Long (supply cbBTC, borrow USDC) | 3.3x (config cap: 3x) |
-| wstETH | Long (supply wstETH, borrow WETH) | 4.3x (config cap: 3x) |
+| Asset | Long | Short | Max leverage |
+|-------|------|-------|--------------|
+| WETH | Supply WETH, borrow USDC | Supply USDC, borrow WETH | 4.5x (config cap: 3x) |
+| cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) |
+| wstETH | Supply wstETH, borrow WETH | — (not supported) | 4.3x (config cap: 3x) |
 
-Short strategies are not included in this skill — the trend signal is directional
-toward the dominant trend. For manual short execution, use the base `aave-leverage` skill.
+The bot trades both longs and shorts automatically based on the trend signal:
+- 3/3 or 2/3 timeframes positive → long
+- 1/3 or 0/3 timeframes positive → short
+
+Configure the short asset via `short_borrow_asset` and `short_position_id` in `config.yml`.
+
+## One wallet per bot instance — hard requirement
+
+**Never run two bot instances that share the same wallet address.**
+
+Each bot instance only tracks its own `trades.jsonl` to know whether a position is open.
+Two instances sharing a wallet will not see each other's trades, leading to:
+
+- Both bots opening simultaneously (double exposure)
+- Both bots triggering health-factor defense at the same time (double reduce/close)
+- Aave's cross-collateral HF being depleted unexpectedly when a second position opens
+
+**If you want to trade multiple assets**, run one instance per asset, each with its own:
+- Dedicated bot wallet (funded separately)
+- Own `config.yml` pointing to that wallet
+- Own `trades.jsonl` file
+- Own MCP session token (tokens are wallet-bound)
+
+```
+bot-eth/
+  config.yml       ← user_address: 0xWALLET_ETH
+  trades.jsonl
+
+bot-btc/
+  config.yml       ← user_address: 0xWALLET_BTC
+  trades.jsonl
+```
+
+This keeps each bot's risk fully isolated. If the ETH bot gets liquidated, it has zero
+effect on the BTC bot's collateral or health factor.
 
 ---
 
@@ -99,21 +132,24 @@ The file is gitignored — it contains your wallet address.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `paper_trading` | bool | `true` | Master switch. `false` = real transactions. Do not change until you have 20+ paper cycles. |
-| `asset` | string | `"WETH"` | Asset to trade. `WETH`, `cbBTC`, or `wstETH`. |
-| `position_id` | string | `"WETH/USDC"` | Position identifier for `prepare_close`. Must match `asset`. |
-| `user_address` | string | — | Your wallet address. **Required before first run.** |
-| `max_leverage` | float | `3.0` | Maximum leverage for any open. Hard cap is 4x regardless of this value. |
-| `base_position_pct` | float | `0.20` | Fraction of wallet balance used as seed on a strong signal. |
-| `strong_signal_size` | float | `1.0` | Multiplier on `base_position_pct` for a strong signal. |
-| `moderate_signal_size` | float | `0.5` | Multiplier for a moderate signal. |
-| `take_profit_pct` | float | `0.05` | Close when asset is up this % from entry (0.05 = 5%). |
-| `stop_loss_pct` | float | `0.03` | Close when asset is down this % from entry (0.03 = 3%). |
-| `max_borrow_apr` | float | `8.0` | USDC borrow APR threshold from `get_position`. Above this = suppress entries. |
-| `max_volatility_1h` | float | `5.0` | Skip entire cycle if 1h move exceeds this % in either direction. |
-| `btc_dominance_rise_threshold` | float | `2.0` | Suppress longs if BTC dominance rose more than this % since last cycle. |
-| `hf_reduce_threshold` | float | `1.35` | Call `prepare_reduce` if health factor falls below this. |
-| `hf_close_threshold` | float | `1.20` | Force close if health factor falls below this. |
-| `min_open_hf` | float | `1.30` | Skip opening if projected health factor would be below this. |
+| `asset` | string | `"WETH"` | Long collateral asset: `WETH`, `cbBTC`, or `wstETH`. |
+| `position_id` | string | `"WETH/USDC"` | Long position ID for `prepare_close`. Must match `asset`. |
+| `short_borrow_asset` | string | `"WETH"` | Asset to borrow for shorts: `WETH` or `cbBTC`. |
+| `short_position_id` | string | `"USDC/WETH"` | Short position ID for `prepare_close`. Must match `short_borrow_asset`. |
+| `user_address` | string | — | Your dedicated bot wallet address. **Required. Never share with another bot instance.** |
+| `leverage` | float | `3.0` | Leverage applied to every new position (long and short). |
+| `max_leverage` | float | `4.0` | Hard cap. The MCP server also enforces its own ceiling per asset. |
+| `base_position_pct` | float | `0.20` | Fraction of total collateral used as seed on a strong signal (1.0 multiplier). |
+| `strong_signal_size` | float | `1.0` | Multiplier on `base_position_pct` for a strong signal (3/3 or 0/3 timeframes). |
+| `moderate_signal_size` | float | `0.5` | Multiplier for a moderate signal (2/3 or 1/3 timeframes). |
+| `take_profit_pct` | float | `5.0` | Close when position is up this % from entry. |
+| `stop_loss_pct` | float | `3.0` | Close when position is down this % from entry. |
+| `max_borrow_apr` | float | `8.0` | Skip new entries if USDC borrow APR exceeds this %. |
+| `max_volatility_1h` | float | `5.0` | Skip entire cycle if 1h price move exceeds this % in either direction. |
+| `btc_dominance_rise_threshold` | float | `2.0` | Suppress longs if BTC dom rose > this %; suppress shorts if BTC dom fell > this %. |
+| `hf_defense_reduce` | float | `1.35` | Call `prepare_reduce` if health factor drops below this. |
+| `hf_defense_close` | float | `1.20` | Force close if health factor drops below this. |
+| `min_open_hf` | float | `1.30` | Skip opening if current health factor is below this. |
 
 **To go live:** change `paper_trading: false` in `config.yml`. All other behavior is identical.
 
@@ -190,12 +226,12 @@ If no prior cycle exists, skip this filter for the first run.
 
 Count how many of the three timeframes show positive price change:
 
-| Positives (out of 3) | Trend score | Action |
-|---------------------|-------------|--------|
-| 3 | `strong_long` | Open long at full size |
-| 2 | `moderate_long` | Open long at half size |
-| 1 | `moderate_short` | No action (shorts not supported) |
-| 0 | `strong_short` | No action (shorts not supported) |
+| Positives (out of 3) | Signal | Direction | Multiplier | Action |
+|---------------------|--------|-----------|------------|--------|
+| 3 | `strong_long` | long | 1.0 | Open long at full size |
+| 2 | `moderate_long` | long | 0.5 | Open long at half size |
+| 1 | `moderate_short` | short | 0.5 | Open short at half size |
+| 0 | `strong_short` | short | 1.0 | Open short at full size |
 
 Example: ETH is +0.8% (1h), +1.2% (24h), -0.5% (7d) → 2 positives → `moderate_long`
 
@@ -211,10 +247,12 @@ Example: ETH is +0.8% (1h), +1.2% (24h), -0.5% (7d) → 2 positives → `moderat
 - Action: set decision to `hold` or `no_trade`, log `"filters_triggered": ["borrow_cost"]`
 - Why: high carry cost reduces the edge needed to profit; wait for rates to normalize
 
-**Filter 3 — BTC dominance rising** (suppresses longs only)
-- Trigger: `btc_dominance_pct - btc_dominance_prev > btc_dominance_rise_threshold`
-- Action: suppress `moderate_long` and `strong_long`, log `"filters_triggered": ["btc_dominance"]`
-- Why: rising BTC dominance signals capital rotation into BTC and away from alts
+**Filter 3 — BTC dominance shift** (direction-aware)
+- Long trigger: `btc_dominance_pct - btc_dominance_prev > btc_dominance_rise_threshold`
+  → suppress longs; rising BTC dom = capital rotating into BTC away from alts
+- Short trigger: `btc_dominance_prev - btc_dominance_pct > btc_dominance_rise_threshold`
+  → suppress shorts; falling BTC dom = alt season, alts rallying against BTC
+- Action: log `"filters_triggered": ["btc_dominance"]`
 - Note: `btc_dominance_prev` is read from the last cycle entry in `trades.jsonl`.
   If no prior cycle exists, skip this filter.
 
