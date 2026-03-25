@@ -120,7 +120,7 @@ def _recent_liquidations(w3: Web3, lookback: int) -> Optional[int]:
             timeout=10,
         ).json()["result"]
         latest_int = int(latest_hex, 16)
-        from_hex = hex(latest_int - lookback)
+        from_hex = hex(latest_int - (lookback - 1))
 
         resp = _req.post(
             w3.provider.endpoint_uri,
