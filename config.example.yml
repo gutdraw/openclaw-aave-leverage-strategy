@@ -43,8 +43,8 @@ moderate_signal_size: 0.5   # multiplier for moderate signal (2/3 timeframes ali
 # EXIT THRESHOLDS
 # Based on % move in the underlying asset from entry price.
 # ---------------------------------------------------------------
-take_profit_pct: 0.05       # close when asset is up 5% from entry
-stop_loss_pct: 0.03         # close when asset is down 3% from entry
+take_profit_pct: 5.0        # close when asset is up 5% from entry
+stop_loss_pct: 3.0          # close when asset is down 3% from entry
 
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
