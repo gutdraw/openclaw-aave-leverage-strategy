@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
 from web3 import Web3
 
 log = logging.getLogger(__name__)
@@ -108,22 +109,22 @@ def _utilization(w3: Web3, symbol: str) -> Optional[float]:
 
 def _recent_liquidations(w3: Web3, lookback: int) -> Optional[int]:
     """Count LiquidationCall events on the Aave v3 pool within the last `lookback` blocks.
-    Uses raw requests to bypass web3.py serialization and ensure hex block params."""
-    import requests as _req
+    Uses raw httpx calls to bypass web3.py serialization and ensure hex block params."""
     topic = "0x" + Web3.keccak(
         text="LiquidationCall(address,address,address,uint256,uint256,address,bool)"
     ).hex()
+    rpc_url = str(w3.provider.endpoint_uri)
     try:
-        latest_hex = _req.post(
-            w3.provider.endpoint_uri,
+        latest_hex = httpx.post(
+            rpc_url,
             json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1},
             timeout=10,
         ).json()["result"]
         latest_int = int(latest_hex, 16)
         from_hex = hex(latest_int - (lookback - 1))
 
-        resp = _req.post(
-            w3.provider.endpoint_uri,
+        resp = httpx.post(
+            rpc_url,
             json={
                 "jsonrpc": "2.0",
                 "method": "eth_getLogs",

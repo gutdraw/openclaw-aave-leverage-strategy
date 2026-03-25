@@ -96,17 +96,20 @@ def fetch(asset: str, timeout: int = 15) -> Optional[TechSignal]:
     rsi_bull = RSI_BULL_LOW <= rsi_val <= RSI_BULL_HIGH
     rsi_bear = RSI_BEAR_LOW <= rsi_val <= RSI_BEAR_HIGH
 
+    overbought = rsi_val > RSI_BULL_HIGH   # RSI > 75 — not a buy signal
+    oversold   = rsi_val < RSI_BEAR_LOW    # RSI < 25 — not a sell signal
+
     # Score: 0 (strong_short) → 4 (strong_long)
     if ema_bull and rsi_bull:
         score = 4
-    elif ema_bull and not rsi_bear:
+    elif ema_bull and not rsi_bear and not overbought:
         score = 3
-    elif not ema_bull and rsi_bear:
+    elif not ema_bull and rsi_bear and not oversold:
         score = 1
-    elif not ema_bull and not rsi_bull:
+    elif not ema_bull and not rsi_bull and not oversold:
         score = 0
     else:
-        score = 2  # conflicting
+        score = 2  # overbought/oversold or genuinely conflicting → hold
 
     return TechSignal(
         score=score,

@@ -101,7 +101,7 @@ max_usdc_utilization: 0.92           # e.g. 0.92 = 92% — near the rate kink
 
 # Recent liquidations on Aave v3 Base (last ~5 minutes / 150 blocks).
 # A spike indicates a liquidation cascade — don't open leveraged positions into one.
-max_recent_liquidations: 10
+max_recent_liquidations: 3
 
 # ---------------------------------------------------------------
 # RISK GUARDRAILS

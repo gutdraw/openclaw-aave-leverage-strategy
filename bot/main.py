@@ -74,8 +74,8 @@ def _paper_health_factor(
     if open_trade is None:
         return 999.0
     direction = open_trade.get("direction", "long")
-    supply   = eff_supply or float(open_trade.get("supply", 0))
-    borrow   = eff_borrow or float(open_trade.get("borrow", 0))
+    supply   = eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
+    borrow   = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
     leverage = float(open_trade.get("leverage", 2.0))
     if direction == "short":
         lt = _LIQ_THRESHOLD.get("USDC", 0.78)
@@ -266,8 +266,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     # ── 5. Exit check (TP / SL) on open position ──────────────────────────
     if open_trade is not None:
         entry_price  = float(open_trade.get("entry_price", 0))
-        supply_units = eff_supply or float(open_trade.get("supply", 0))
-        borrow_units = eff_borrow or float(open_trade.get("borrow", 0))
+        supply_units = eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
+        borrow_units = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
         trade_lev    = float(open_trade.get("leverage", cfg.leverage))
         p = pnl.compute_unrealised(
             entry_price=entry_price,
@@ -407,9 +407,9 @@ def _close_trade_entry(
 ) -> dict:
     # Use effective totals (including increases) for accurate P&L
     effective = dict(open_trade)
-    if eff_supply:
+    if eff_supply > 0:
         effective["supply"] = eff_supply
-    if eff_borrow:
+    if eff_borrow > 0:
         effective["borrow"] = eff_borrow
     realised = pnl.compute_realised(effective, close_price)
     return {

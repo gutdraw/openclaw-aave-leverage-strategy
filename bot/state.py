@@ -2,10 +2,14 @@
 Append-only JSONL trade log: read/write helpers for trades.jsonl.
 All entries are immutable once written — never update or delete lines.
 """
+import fcntl
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 def now_iso() -> str:
@@ -17,11 +21,15 @@ def load_entries(path: str) -> list[dict]:
     p = Path(path)
     if not p.exists():
         return []
-    return [
-        json.loads(line)
-        for line in p.read_text().splitlines()
-        if line.strip()
-    ]
+    entries = []
+    for i, line in enumerate(p.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            log.warning("state: skipping malformed line %d in %s: %s", i, path, e)
+    return entries
 
 
 def get_open_trade(entries: list[dict]) -> Optional[dict]:
@@ -100,6 +108,11 @@ def get_last_btc_dominance(entries: list[dict]) -> Optional[float]:
 
 
 def append_entry(path: str, entry: dict) -> None:
-    """Append a single JSON entry as a new line."""
+    """Append a single JSON entry as a new line. Uses an exclusive file lock to prevent
+    concurrent writes from corrupting the log."""
     with open(path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.write(json.dumps(entry) + "\n")
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
