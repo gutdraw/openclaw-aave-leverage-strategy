@@ -144,7 +144,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             )
             res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
             trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res)
-            state.append_entry(cfg.trades_file, cycle_entry | {"decision": "signal_reversal"})
+            cycle_entry["decision"] = "signal_reversal"
+            state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
 
@@ -163,7 +164,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                     )
                     res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
                     trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res)
-                    state.append_entry(cfg.trades_file, cycle_entry | {"decision": "max_hold_days"})
+                    cycle_entry["decision"] = "max_hold_days"
+                    state.append_entry(cfg.trades_file, cycle_entry)
                     state.append_entry(cfg.trades_file, trade_entry)
                     return cycle_entry
             except (ValueError, TypeError):
