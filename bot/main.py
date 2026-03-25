@@ -174,7 +174,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
 
         min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
         if data.health_factor < min_hf and data.health_factor != 999.0:
-            log.info("HF %.3f below min_open_hf %.3f — skip", data.health_factor, cfg.min_open_hf)
+            log.info("HF %.3f below min_open_hf %.3f — skip", data.health_factor, min_hf)
             cycle_entry["decision"] = "skip_min_hf"
             state.append_entry(cfg.trades_file, cycle_entry)
             return cycle_entry
@@ -197,7 +197,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             "supply": size.supply,
             "borrow": size.borrow,
             "seed_usd": size.seed_usd,
-            "leverage": cfg.leverage,
+            "leverage": min(cfg.leverage, cfg.short_max_leverage) if sig.direction == "short" else cfg.leverage,
             "paper": cfg.paper_trading,
             "tx_hash": res.tx_hash,
         }

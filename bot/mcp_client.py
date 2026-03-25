@@ -40,13 +40,13 @@ class MCPClient:
         return self.call("get_position", {"user_address": self.wallet_address})
 
     def prepare_open(self, leverage: float, amount: float,
-                     supply: str, borrow: str) -> dict:
+                     supply_asset: str, borrow_asset: str) -> dict:
         return self.call("prepare_open", {
             "user_address": self.wallet_address,
             "leverage": leverage,
             "amount": amount,
-            "supply_asset": supply,
-            "borrow_asset": borrow,
+            "supply_asset": supply_asset,
+            "borrow_asset": borrow_asset,
         })
 
     def prepare_close(self, position_id: str) -> dict:
@@ -55,12 +55,12 @@ class MCPClient:
             "position_id": position_id,
         })
 
-    def prepare_reduce(self, supply: str, borrow: str,
+    def prepare_reduce(self, supply_asset: str, borrow_asset: str,
                        target_leverage: float) -> dict:
         return self.call("prepare_reduce", {
             "user_address": self.wallet_address,
-            "supply_asset": supply,
-            "borrow_asset": borrow,
+            "supply_asset": supply_asset,
+            "borrow_asset": borrow_asset,
             "target_leverage": target_leverage,
         })
 

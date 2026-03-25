@@ -37,7 +37,8 @@ def get_open_trade(entries: list[dict]) -> Optional[dict]:
         if e.get("action") == "open":
             open_trade = e
         elif e.get("action") == "close" and open_trade is not None:
-            if e.get("asset") == open_trade.get("asset"):
+            if (e.get("asset") == open_trade.get("asset")
+                    and e.get("direction", "long") == open_trade.get("direction", "long")):
                 open_trade = None
     return open_trade
 

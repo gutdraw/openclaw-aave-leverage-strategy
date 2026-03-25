@@ -34,8 +34,9 @@ def test_strong_short():
 
 
 def test_zero_changes():
-    # Zero is not positive — all three non-positive → score 0 → strong_short
+    # All exactly zero → data missing or market flat → hold (no trade)
     s = compute(0.0, 0.0, 0.0)
     assert s.score == 0
-    assert s.label == "strong_short"
-    assert s.direction == "short"
+    assert s.label == "hold"
+    assert s.direction == "none"
+    assert s.multiplier == 0.0

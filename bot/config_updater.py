@@ -35,6 +35,11 @@ BOUNDS: dict[str, tuple[float, float]] = {
     "hf_defense_reduce":             (1.10, 2.50),
     "hf_defense_close":              (1.05, 2.00),
     "min_open_hf":                   (1.05, 2.00),
+    # Short-specific HF thresholds (must remain below 1.17 = 2x short open HF)
+    "short_max_leverage":            (1.0,  2.0),
+    "short_hf_defense_reduce":       (1.01, 1.16),
+    "short_hf_defense_close":        (1.01, 1.14),
+    "short_min_open_hf":             (1.01, 1.16),
 }
 
 # Fields that cannot be changed via this tool (identity / secrets)
@@ -125,6 +130,23 @@ def propose(
             if new_val <= float(close_val):
                 rejected[field] = (
                     f"hf_defense_reduce ({new_val}) must be > hf_defense_close ({close_val})"
+                )
+                continue
+
+        # Cross-field sanity for short HF pair
+        if field == "short_hf_defense_close":
+            reduce_val = changes.get("short_hf_defense_reduce", raw.get("short_hf_defense_reduce", 1.09))
+            if new_val >= float(reduce_val):
+                rejected[field] = (
+                    f"short_hf_defense_close ({new_val}) must be < short_hf_defense_reduce ({reduce_val})"
+                )
+                continue
+
+        if field == "short_hf_defense_reduce":
+            close_val = changes.get("short_hf_defense_close", raw.get("short_hf_defense_close", 1.05))
+            if new_val <= float(close_val):
+                rejected[field] = (
+                    f"short_hf_defense_reduce ({new_val}) must be > short_hf_defense_close ({close_val})"
                 )
                 continue
 
