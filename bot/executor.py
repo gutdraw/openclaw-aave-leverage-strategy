@@ -35,8 +35,9 @@ def open_position(
     """
     Open a leveraged position.
 
-    Long:  supply_asset=cfg.asset (e.g. WETH), borrow_asset=cfg.borrow_asset (USDC)
-    Short: supply_asset="USDC",                borrow_asset=cfg.short_borrow_asset (e.g. WETH)
+    Long:  swap USDC→asset first (bot is always flat in USDC between trades),
+           then supply_asset=cfg.asset, borrow_asset=USDC
+    Short: supply_asset=USDC (already flat), borrow_asset=cfg.short_borrow_asset
     """
     if direction == "short":
         supply_asset = "USDC"
@@ -45,9 +46,11 @@ def open_position(
     else:
         supply_asset = cfg.asset
         borrow_asset = cfg.borrow_asset
-        amount = size.supply   # asset units
+        amount = size.supply   # asset units after swap
 
     if cfg.paper_trading:
+        if direction == "long":
+            log.info("[PAPER] swap USDC → %s amount=%.6f", cfg.asset, amount)
         log.info(
             "[PAPER] open %s supply=%.4f %s borrow=%.4f %s",
             direction, amount, supply_asset, size.borrow, borrow_asset,
@@ -56,6 +59,14 @@ def open_position(
             action="paper", tx_hash=None,
             raw={"paper": True, "direction": direction, "supply": amount, "borrow": size.borrow},
         )
+
+    # Live mode — swap USDC→asset before opening a long
+    if direction == "long":
+        log.info("swap USDC → %s amount=%.6f", cfg.asset, amount)
+        swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
+        swap_hash = signer.sign_and_send(swap_resp["transaction"])
+        signer.wait_for_receipt(swap_hash)
+        log.info("swap tx %s", swap_hash)
 
     resp = mcp.prepare_open(
         leverage=cfg.leverage,
@@ -71,18 +82,39 @@ def open_position(
 
 def close_position(
     position_id: str,
+    direction: str,
+    asset_amount: float,
     cfg: BotConfig,
     mcp: MCPClient,
     signer=None,
 ) -> ExecResult:
+    """
+    Close a leveraged position and return to flat USDC.
+
+    Long close: flash loan repays USDC debt, returns cfg.asset to wallet.
+                Then swap asset→USDC so bot is flat in stable.
+    Short close: flash loan repays asset debt, returns USDC to wallet.
+                 Already flat — no swap needed.
+    """
     if cfg.paper_trading:
         log.info("[PAPER] close %s", position_id)
+        if direction == "long":
+            log.info("[PAPER] swap %s → USDC amount=%.6f", cfg.asset, asset_amount)
         return ExecResult(action="paper", tx_hash=None, raw={"paper": True, "position_id": position_id})
 
     resp = mcp.prepare_close(position_id=position_id)
     tx_hash = signer.sign_and_send(resp["transaction"])
     signer.wait_for_receipt(tx_hash)
     log.info("close tx %s", tx_hash)
+
+    # Swap asset→USDC after closing a long so bot is always flat in stable
+    if direction == "long" and asset_amount > 0:
+        log.info("swap %s → USDC amount=%.6f", cfg.asset, asset_amount)
+        swap_resp = mcp.swap(token_in=cfg.asset, token_out="USDC", amount_in=asset_amount)
+        swap_hash = signer.sign_and_send(swap_resp["transaction"])
+        signer.wait_for_receipt(swap_hash)
+        log.info("swap tx %s", swap_hash)
+
     return ExecResult(action="close", tx_hash=tx_hash, raw=resp)
 
 

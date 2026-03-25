@@ -114,7 +114,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
 
         if hf < hf_close:
             log.warning("HF %.3f < %.3f — force close", hf, hf_close)
-            res = executor.close_position(pos_id, cfg, mcp, signer)
+            res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
             trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res)
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": "hf_close"})
             state.append_entry(cfg.trades_file, trade_entry)
@@ -150,7 +150,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         exit_reason = pnl.should_exit(p)
         if exit_reason:
             log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
-            res = executor.close_position(pos_id, cfg, mcp, signer)
+            res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
             trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res)
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": exit_reason})
             state.append_entry(cfg.trades_file, trade_entry)

@@ -63,3 +63,11 @@ class MCPClient:
             "borrow_asset": borrow,
             "target_leverage": target_leverage,
         })
+
+    def swap(self, token_in: str, token_out: str, amount_in: float) -> dict:
+        return self.call("swap", {
+            "user_address": self.wallet_address,
+            "token_in": token_in,
+            "token_out": token_out,
+            "amount_in": str(amount_in),
+        })
