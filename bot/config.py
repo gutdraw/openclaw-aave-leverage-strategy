@@ -48,6 +48,13 @@ class BotConfig:
     # ── Exit rules ────────────────────────────────────────────────────────
     take_profit_pct: float = 5.0
     stop_loss_pct: float = 3.0
+    # Signal reversal exit: close a long when signal flips to short (or vice versa).
+    # Only triggers when the opposing score reaches signal_reversal_min_score or below.
+    # e.g. default=1 means close long if signal score ≤ 1 (moderate_short or strong_short).
+    signal_reversal_exit: bool = True
+    signal_reversal_min_score: int = 1   # close long if score ≤ this; close short if score ≥ (3 - this)
+    # Time-based exit: close after N days regardless of P&L (prevents carry drag + HF drift).
+    max_hold_days: float = 7.0
 
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True

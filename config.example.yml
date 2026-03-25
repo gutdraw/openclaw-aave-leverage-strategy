@@ -46,6 +46,19 @@ moderate_signal_size: 0.5   # multiplier for moderate signal (2/3 timeframes ali
 take_profit_pct: 5.0        # close when asset is up 5% from entry
 stop_loss_pct: 3.0          # close when asset is down 3% from entry
 
+# Signal reversal exit: close a position when the trend signal flips against it.
+# Trend-following literature strongly recommends this over fixed TP (which caps winners).
+# signal_reversal_min_score: 0 = only close on full reversal (strong_short/strong_long)
+#                             1 = close on moderate or strong reversal (default)
+#                             2 = close on any opposing signal
+signal_reversal_exit: true
+signal_reversal_min_score: 1
+
+# Time-based exit: close after N days to prevent carry drag and HF drift.
+# At 8% USDC borrow APR a $10K 2x long costs ~$2.20/day in carry.
+# Set to 0 to disable.
+max_hold_days: 7.0
+
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
 # These suppress new entries when conditions are unfavorable.

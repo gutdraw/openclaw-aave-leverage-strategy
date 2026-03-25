@@ -40,6 +40,9 @@ BOUNDS: dict[str, tuple[float, float]] = {
     "short_hf_defense_reduce":       (1.01, 1.16),
     "short_hf_defense_close":        (1.01, 1.14),
     "short_min_open_hf":             (1.01, 1.16),
+    # Exit rules
+    "signal_reversal_min_score":     (0,    2),    # int: 0=only strong flip, 1=moderate+strong, 2=any flip
+    "max_hold_days":                 (0.5,  30.0),
 }
 
 # Fields that cannot be changed via this tool (identity / secrets)
