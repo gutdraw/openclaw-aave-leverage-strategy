@@ -147,6 +147,9 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         "borrow_apr": data.borrow_apr,
         "health_factor": data.health_factor,
         "btc_dominance_pct": data.btc_dominance,
+        "funding_rate": data.funding_rate,
+        "fear_greed": data.fear_greed,
+        "volume_24h": data.volume_24h,
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
     }

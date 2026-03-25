@@ -31,6 +31,17 @@ class BotConfig:
     max_volatility_1h: float = 5.0
     max_borrow_apr: float = 8.0
     btc_dominance_rise_threshold: float = 2.0
+    # Funding rate: Binance perp funding in % per 8h. Positive = longs pay shorts.
+    # Extreme positive → crowded longs → suppress new longs (and vice versa for shorts).
+    max_funding_rate_long: float = 0.05    # skip longs if funding > 0.05% per 8h
+    max_funding_rate_short: float = 0.05   # skip shorts if funding < -0.05% per 8h
+    # Fear & Greed Index (0=extreme fear, 100=extreme greed).
+    # Extreme greed → suppress longs (over-extended). Extreme fear → suppress shorts.
+    max_fear_greed_long: int = 85          # skip longs if F&G >= this
+    min_fear_greed_short: int = 15         # skip shorts if F&G <= this
+    # Volume: suppress new entries if 24h spot volume is below threshold (USD).
+    # Low volume = weak conviction behind price moves. Set 0 to disable.
+    min_volume_24h_usd: float = 0.0
 
     # ── Health factor thresholds — longs ──────────────────────────────────
     min_open_hf: float = 1.30
@@ -52,9 +63,10 @@ class BotConfig:
     # Only triggers when the opposing score reaches signal_reversal_min_score or below.
     # e.g. default=1 means close long if signal score ≤ 1 (moderate_short or strong_short).
     signal_reversal_exit: bool = True
-    signal_reversal_min_score: int = 1   # close long if score ≤ this; close short if score ≥ (3 - this)
+    signal_reversal_min_score: int = 0   # 0=only strong reversal (score 0/3); 1=moderate+strong
+    min_hold_hours: float = 2.0          # minimum hours before signal reversal can trigger
     # Time-based exit: close after N days regardless of P&L (prevents carry drag + HF drift).
-    max_hold_days: float = 7.0
+    max_hold_days: float = 14.0
     # TP suppression on strong signal: when False (default), take-profit is skipped if the
     # signal is still at maximum strength in the trade direction — let winners ride.
     # SL always applies. Set True to restore fixed-TP behaviour regardless of signal.

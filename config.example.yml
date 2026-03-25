@@ -73,6 +73,22 @@ max_borrow_apr: 8.0         # skip entries if USDC borrow APR > 8% (from get_pos
 max_volatility_1h: 5.0      # skip the entire cycle if 1h price move > 5% (spike risk)
 btc_dominance_rise_threshold: 2.0  # suppress longs if BTC dominance rose > 2% since last cycle
 
+# Funding rate filter: Binance perpetual funding rate in % per 8h.
+# Positive = longs pay shorts. Extreme positive → crowded trade → suppress new longs.
+# 0.05% per 8h ≈ 54% annualised. Set to 0.5 to effectively disable.
+max_funding_rate_long: 0.05   # skip longs if Binance perp funding > 0.05% per 8h
+max_funding_rate_short: 0.05  # skip shorts if funding < -0.05% per 8h
+
+# Fear & Greed Index (alternative.me): 0=extreme fear, 100=extreme greed.
+# Extreme greed historically precedes reversals; extreme fear = capitulation.
+max_fear_greed_long: 85       # skip longs if F&G >= 85
+min_fear_greed_short: 15      # skip shorts if F&G <= 15
+
+# Volume filter: skip new entries if 24h spot volume (USD) is below threshold.
+# Low volume = weak conviction. Set to 0 to disable (default).
+# Example thresholds: cbBTC ~$500M, WETH ~$3B (check CoinGecko for typical levels).
+min_volume_24h_usd: 0
+
 # ---------------------------------------------------------------
 # RISK GUARDRAILS
 # These trigger defensive actions on an open position.

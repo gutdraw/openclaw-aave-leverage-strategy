@@ -77,7 +77,47 @@ def apply_all(
                 decision="skip_btc_dominance",
             )
 
-    # ── Filter 4: Position overlap ────────────────────────────────────────
+    # ── Filter 4: Funding rate (crowded positioning) ──────────────────────
+    # Only applied when opening new positions. If Binance is unavailable (None), skip.
+    if open_trade is None and data.funding_rate is not None:
+        if is_long and data.funding_rate > cfg.max_funding_rate_long:
+            return FilterResult(
+                blocked=True,
+                triggered=["funding_rate"],
+                decision="skip_funding_rate",
+            )
+        if is_short and data.funding_rate < -cfg.max_funding_rate_short:
+            return FilterResult(
+                blocked=True,
+                triggered=["funding_rate"],
+                decision="skip_funding_rate",
+            )
+
+    # ── Filter 5: Fear & Greed (sentiment extremes) ───────────────────────
+    if open_trade is None and data.fear_greed is not None:
+        if is_long and data.fear_greed >= cfg.max_fear_greed_long:
+            return FilterResult(
+                blocked=True,
+                triggered=["fear_greed"],
+                decision="skip_fear_greed",
+            )
+        if is_short and data.fear_greed <= cfg.min_fear_greed_short:
+            return FilterResult(
+                blocked=True,
+                triggered=["fear_greed"],
+                decision="skip_fear_greed",
+            )
+
+    # ── Filter 6: Volume (low-conviction moves) ───────────────────────────
+    if open_trade is None and cfg.min_volume_24h_usd > 0 and data.volume_24h is not None:
+        if data.volume_24h < cfg.min_volume_24h_usd:
+            return FilterResult(
+                blocked=True,
+                triggered=["volume"],
+                decision="skip_volume",
+            )
+
+    # ── Filter 7: Position overlap ────────────────────────────────────────
     if open_trade is not None:
         return FilterResult(
             blocked=True,

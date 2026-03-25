@@ -9,12 +9,22 @@ import httpx
 
 COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_GLOBAL  = "https://api.coingecko.com/api/v3/global"
+BINANCE_PREMIUM   = "https://fapi.binance.com/fapi/v1/premiumIndex"
+FEAR_GREED_URL    = "https://api.alternative.me/fng/"
 
 ASSET_TO_CG_ID: dict[str, str] = {
     "WETH":   "ethereum",
     "ETH":    "ethereum",
     "cbBTC":  "coinbase-wrapped-btc",
     "wstETH": "wrapped-steth",
+}
+
+# Map bot asset → Binance perpetual symbol for funding rate
+ASSET_TO_BINANCE: dict[str, str] = {
+    "WETH":   "ETHUSDT",
+    "ETH":    "ETHUSDT",
+    "wstETH": "ETHUSDT",
+    "cbBTC":  "BTCUSDT",
 }
 
 
@@ -29,6 +39,9 @@ class MarketData:
     health_factor: float          # current Aave HF (999 = no debt)
     total_collateral_usd: float
     position_data: dict           # raw get_position response
+    volume_24h: Optional[float] = None    # 24h spot volume in USD (from CoinGecko)
+    funding_rate: Optional[float] = None  # Binance perp funding rate in % per 8h (None = unavailable)
+    fear_greed: Optional[int] = None      # Crypto Fear & Greed Index 0-100 (None = unavailable)
 
 
 def fetch(
@@ -43,7 +56,7 @@ def fetch(
     sources_failed: list[str] = []
 
     # ── Source 1: CoinGecko coin prices ───────────────────────────────────
-    price = change_1h = change_24h = change_7d = None
+    price = change_1h = change_24h = change_7d = volume_24h = None
     try:
         cg_id = ASSET_TO_CG_ID.get(asset, asset.lower())
         r = httpx.get(
@@ -61,6 +74,7 @@ def fetch(
         change_1h  = float(coin.get("price_change_percentage_1h_in_currency") or 0)
         change_24h = float(coin.get("price_change_percentage_24h_in_currency") or 0)
         change_7d  = float(coin.get("price_change_percentage_7d_in_currency") or 0)
+        volume_24h = float(coin.get("total_volume") or 0) or None
     except Exception as e:
         sources_failed.append(f"coingecko_prices:{e}")
 
@@ -83,6 +97,26 @@ def fetch(
         btc_dominance = float(r.json()["data"]["market_cap_percentage"]["btc"])
     except Exception as e:
         sources_failed.append(f"coingecko_global:{e}")
+
+    # ── Source 4: Binance perp funding rate (soft — failure logged, not blocking) ──
+    funding_rate = None
+    try:
+        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
+        r = httpx.get(BINANCE_PREMIUM, params={"symbol": symbol}, timeout=timeout)
+        r.raise_for_status()
+        # lastFundingRate is a decimal, e.g. 0.0001 = 0.01% per 8h → store as %
+        funding_rate = float(r.json()["lastFundingRate"]) * 100
+    except Exception as e:
+        sources_failed.append(f"binance_funding:{e}")
+
+    # ── Source 5: Fear & Greed Index (soft — failure logged, not blocking) ────
+    fear_greed = None
+    try:
+        r = httpx.get(FEAR_GREED_URL, params={"limit": 1}, timeout=timeout)
+        r.raise_for_status()
+        fear_greed = int(r.json()["data"][0]["value"])
+    except Exception as e:
+        sources_failed.append(f"fear_greed:{e}")
 
     succeeded = sum(x is not None for x in [price, borrow_apr, btc_dominance])
     if succeeded < 2:
@@ -108,4 +142,7 @@ def fetch(
         health_factor=health_factor if health_factor is not None else 999.0,
         total_collateral_usd=total_collateral_usd or 0.0,
         position_data=pos or {},
+        volume_24h=volume_24h,
+        funding_rate=funding_rate,
+        fear_greed=fear_greed,
     ), sources_failed
