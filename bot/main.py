@@ -23,6 +23,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import yaml
@@ -190,20 +191,34 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             (is_short_pos and sig.score >= (3 - cfg.signal_reversal_min_score))
         )
         if reversal:
-            log.info(
-                "Signal reversal exit: %s position, signal=%s score=%d",
-                open_direction, sig.label, sig.score,
-            )
-            res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res)
-            cycle_entry["decision"] = "signal_reversal"
-            state.append_entry(cfg.trades_file, cycle_entry)
-            state.append_entry(cfg.trades_file, trade_entry)
-            return cycle_entry
+            hold_ok = True
+            if cfg.min_hold_hours > 0:
+                open_ts = open_trade.get("ts", "")
+                try:
+                    opened = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - opened).total_seconds() / 3600
+                    if age_hours < cfg.min_hold_hours:
+                        log.info(
+                            "Signal reversal (score=%d) but hold %.1fh < min %.1fh — hold",
+                            sig.score, age_hours, cfg.min_hold_hours,
+                        )
+                        hold_ok = False
+                except (ValueError, TypeError):
+                    pass
+            if hold_ok:
+                log.info(
+                    "Signal reversal exit: %s position, signal=%s score=%d",
+                    open_direction, sig.label, sig.score,
+                )
+                res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
+                trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res)
+                cycle_entry["decision"] = "signal_reversal"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                state.append_entry(cfg.trades_file, trade_entry)
+                return cycle_entry
 
     # ── 5b. Time-based exit ───────────────────────────────────────────
     if open_trade is not None and cfg.max_hold_days > 0:
-        from datetime import datetime, timezone
         open_ts = open_trade.get("ts", "")
         if open_ts:
             try:
