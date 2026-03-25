@@ -1,7 +1,7 @@
 ---
 name: aave-leverage-strategy
 description: Autonomous trend-following strategy for Aave v3 leverage on Base. Runs on a cron schedule, researches market conditions, sizes positions by signal confidence, and tracks P&L in a persistent log. Paper trading by default.
-version: 1.0.0
+version: 1.1.0
 author: gutdraw
 tags: [defi, aave, leverage, base, crypto, trading, autonomous, strategy, paper-trading]
 requires_skill: aave-leverage
@@ -19,8 +19,9 @@ but no on-chain transactions are submitted until you explicitly go live.
 
 | Capability | Detail |
 |------------|--------|
-| Market research | Fetches 1h/24h/7d price trend, USDC borrow cost, BTC dominance |
-| Signal model | 3-timeframe trend score + 4 no-trade filters |
+| Market research | CoinGecko 1h/24h/7d price + volume, USDC borrow cost, BTC dominance, perp funding rate, Fear & Greed index, Aave v3 on-chain utilization |
+| Signal model | 3-timeframe trend score + 9 no-trade filters |
+| Exit strategy | TP/SL, signal reversal (with min-hold guard), time-based (max_hold_days) |
 | Position sizing | Scales seed size by signal confidence (full / half) |
 | Paper trading | Full simulation, no chain calls, identical log output |
 | P&L tracking | Append-only `trades.jsonl` — entry price, exit price, net P&L per trade |
@@ -156,6 +157,20 @@ The file is gitignored — it contains your wallet address.
 | `short_hf_defense_reduce` | float | `1.09` | Call `prepare_reduce` if HF drops below this (shorts). ~7% adverse move at 2x. Must be < 1.17 (2x short open HF). |
 | `short_hf_defense_close` | float | `1.05` | Force close if HF drops below this (shorts). ~11% adverse move at 2x. Liquidation is at ~17% adverse. |
 | `short_min_open_hf` | float | `1.12` | Skip opening a short if current HF is below this. |
+| `signal_reversal_exit` | bool | `true` | Close position when trend flips against it. |
+| `signal_reversal_min_score` | int | `0` | Min reversal score to trigger: 0=strong only, 1=moderate+, 2=any opposing signal. |
+| `min_hold_hours` | float | `2.0` | Minimum hours before signal reversal can close a position (prevents whipsaw). |
+| `max_hold_days` | float | `14.0` | Force-close after this many days to avoid carry drag. Set 0 to disable. |
+| `tp_on_strong_signal` | bool | `false` | When false (default), TP is skipped if signal is still at max strength — let winners ride. SL always applies. |
+| `max_funding_rate_long` | float | `0.05` | Skip longs if Binance perp funding > this % per 8h (crowded longs). |
+| `max_funding_rate_short` | float | `0.05` | Skip shorts if Binance perp funding < -this % per 8h (crowded shorts). |
+| `max_fear_greed_long` | int | `85` | Skip longs if Fear & Greed ≥ this (extreme greed — market over-extended). |
+| `min_fear_greed_short` | int | `15` | Skip shorts if Fear & Greed ≤ this (extreme fear / capitulation). |
+| `min_volume_24h_usd` | float | `0` | Skip new entries if 24h spot volume < this USD. 0 = disabled. |
+| `rpc_url` | string | `"https://mainnet.base.org"` | Base RPC for on-chain reads. Use Alchemy for `eth_getLogs` with longer lookback. |
+| `onchain_lookback_blocks` | int | `10` | Block lookback for liquidation event scan. Alchemy free tier: max 10 (~20s on Base). |
+| `max_usdc_utilization` | float | `0.92` | Skip new entries if Aave USDC pool utilization > this (borrow rate kink at ~90%). |
+| `max_recent_liquidations` | int | `3` | Skip new entries if this many LiquidationCall events in the lookback window. |
 
 **To go live:** change `paper_trading: false` in `config.yml`. All other behavior is identical.
 
@@ -215,12 +230,60 @@ The 24h change in BTC dominance is computed by comparing this value to the
 `btc_dominance_pct` field from the most recent cycle entry in `trades.jsonl`.
 If no prior cycle exists, skip this filter for the first run.
 
+### Source 4 — Perp funding rate (soft — failure logged, not blocking)
+
+Tries Binance → Bybit → OKX in order. Binance and Bybit geo-block US IPs (HTTP 451/403);
+OKX is accessible globally without auth.
+
+```
+GET https://fapi.binance.com/fapi/v1/premiumIndex?symbol=ETHUSDT
+GET https://api.bybit.com/v5/market/tickers?category=linear&symbol=ETHUSDT
+GET https://www.okx.com/api/v5/public/funding-rate?instId=ETH-USDT-SWAP
+```
+
+Field to extract: `lastFundingRate` (Binance) / `fundingRate` (Bybit/OKX), multiply by 100 to get % per 8h.
+
+Asset → symbol mapping: WETH/wstETH → ETHUSDT / ETH-USDT-SWAP, cbBTC → BTCUSDT / BTC-USDT-SWAP.
+
+### Source 5 — Aave v3 Base on-chain state (soft — failure logged, not blocking)
+
+Read directly from Base via eth_call and eth_getLogs. Uses the configured `rpc_url`
+(default public Base RPC; use Alchemy for longer lookback windows).
+
+**USDC pool utilization:**
+```
+varDebtToken.totalSupply() / aToken.totalSupply()
+```
+- USDC aToken: `0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB`
+- USDC varDebtToken: `0x59dca05b6c26dbd64b5381374aaac5cd05644c28`
+
+Also fetched for the trade asset (WETH, cbBTC) as `asset_utilization`.
+
+**Recent liquidations:**
+```
+eth_getLogs for LiquidationCall on Aave v3 Pool in last onchain_lookback_blocks blocks
+```
+- Aave v3 Pool: `0xA238Dd80C259a72e81d7e4664a9801593F98d1c5`
+- Topic: keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)")
+- Alchemy free tier: max 10 blocks (~20s). PAYG: set `onchain_lookback_blocks: 150` (~5 min).
+
+### Source 6 — Fear & Greed Index (soft — failure logged, not blocking)
+
+```
+GET https://api.alternative.me/fng/?limit=1
+```
+
+Field to extract: `data[0].value` (integer 0–100).
+0 = extreme fear, 100 = extreme greed.
+
 ### Fallback behavior
 
-- If any single source fails: log which source failed in the cycle entry
-  (`"sources_failed": ["coingecko_global"]`), continue with remaining sources.
-- If fewer than 2 sources succeed: write a cycle entry with
+Sources 1-3 (CoinGecko prices, get_position, CoinGecko global) are required. Sources 4-6 are soft — if unavailable, the corresponding filter is simply skipped.
+
+- If any required source fails: log in `sources_failed`, continue with remaining sources.
+- If fewer than 2 required sources succeed: write a cycle entry with
   `"decision": "skip_insufficient_data"` and exit without acting.
+- Price is always mandatory: if CoinGecko prices fail, exit regardless of other sources.
 - Note: `get_position` is always called if a position is open (Step 6) — if it fails,
   treat it as a hard stop and exit without acting regardless of other sources.
 
@@ -262,7 +325,33 @@ Example: ETH is +0.8% (1h), +1.2% (24h), -0.5% (7d) → 2 positives → `moderat
 - Note: `btc_dominance_prev` is read from the last cycle entry in `trades.jsonl`.
   If no prior cycle exists, skip this filter.
 
-**Filter 4 — Position already open in same direction** (suppresses duplicate entry)
+**Filter 4 — Funding rate crowding** (direction-aware, suppresses new entries only)
+- Long trigger: `funding_rate > max_funding_rate_long` (longs paying shorts heavily — crowded)
+- Short trigger: `funding_rate < -max_funding_rate_short` (shorts paying longs heavily — crowded)
+- Skipped if funding rate unavailable (soft source)
+- Why: extreme funding = crowded positioning, mean-reversion risk
+
+**Filter 5 — Fear & Greed sentiment** (direction-aware, suppresses new entries only)
+- Long trigger: `fear_greed >= max_fear_greed_long` (extreme greed — market over-extended)
+- Short trigger: `fear_greed <= min_fear_greed_short` (extreme fear / capitulation)
+- Skipped if F&G unavailable (soft source)
+- Why: extreme sentiment often precedes reversals
+
+**Filter 6 — Volume floor** (suppresses new entries only)
+- Trigger: `volume_24h < min_volume_24h_usd` (disabled by default: 0)
+- Why: low liquidity → wider spreads, slippage, and manipulation risk
+
+**Filter 7 — USDC pool utilization** (suppresses new entries only)
+- Trigger: `usdc_utilization > max_usdc_utilization` (default 0.92)
+- Skipped if on-chain unavailable (soft source)
+- Why: Aave's borrow rate kinks sharply above ~90% utilization. At 92% the variable APR is already well above normal — the MCP `borrow_apr` field is too slow to catch this in real-time.
+
+**Filter 8 — Liquidation cascade** (suppresses new entries only)
+- Trigger: `recent_liquidations > max_recent_liquidations` in last `onchain_lookback_blocks` blocks
+- Skipped if on-chain unavailable (soft source)
+- Why: entering into a cascade amplifies risk. Even a small number of liquidations in a 20s window is a stress signal.
+
+**Filter 9 — Position already open in same direction** (suppresses duplicate entry)
 - Trigger: open trade exists in `trades.jsonl` with same direction as current signal
 - Action: set decision to `hold`, do not open another position
 - Why: one position at a time — never stack leverage
@@ -321,7 +410,7 @@ If fewer than 2 succeed, write a skipped cycle entry and exit.
 Apply the signal model to the fetched price changes.
 
 **Step 5 — Apply no-trade filters**
-Check all 4 filters in priority order. Record which filters triggered.
+Check all 9 filters in priority order. Record which filters triggered.
 
 **Step 6 — Check open position (if one exists)**
 Call `get_position(user_address)` to get current HF and on-chain state.
@@ -331,12 +420,16 @@ Call `get_position(user_address)` to get current HF and on-chain state.
 - b. Else if `health_factor < hf_reduce_threshold` → call `prepare_reduce` to bring
   leverage down toward `min_open_hf` target (exit_reason: `hf_defense_reduce`)
 - c. Else check exit conditions:
-  - If `current_price >= entry_price * (1 + take_profit_pct)` → close
+  - If `current_price >= entry_price * (1 + take_profit_pct)` AND
+    (`tp_on_strong_signal: true` OR signal not at max strength) → close
     (exit_reason: `take_profit`)
   - If `current_price <= entry_price * (1 - stop_loss_pct)` → close
     (exit_reason: `stop_loss`)
-  - If trend_score is now opposite direction from open signal → close
+  - If `signal_reversal_exit: true` AND trend_score is opposite direction AND
+    score >= `signal_reversal_min_score` AND position age >= `min_hold_hours` → close
     (exit_reason: `signal_reversal`)
+  - If `max_hold_days > 0` AND position age > `max_hold_days` → close
+    (exit_reason: `max_hold_days`)
 
 **Step 7 — Open position (if no position open and signal is actionable)**
 - Compute `seed_usd` from sizing formula
@@ -365,11 +458,23 @@ Every exit writes a `type=trade, action=close` entry to `trades.jsonl` with:
 |-------------|---------|----------|
 | `hf_defense_close` | HF < `hf_close_threshold` | Highest — overrides all |
 | `hf_defense_reduce` | HF < `hf_reduce_threshold` | High — reduces, does not close |
-| `take_profit` | price >= entry * (1 + `take_profit_pct`) | Normal |
+| `take_profit` | price >= entry * (1 + `take_profit_pct`), unless `tp_on_strong_signal: false` and signal still at max strength | Normal |
 | `stop_loss` | price <= entry * (1 - `stop_loss_pct`) | Normal |
-| `signal_reversal` | trend_score flips direction from entry signal | Normal |
+| `signal_reversal` | trend score flips to opposite direction, score >= `signal_reversal_min_score`, position age >= `min_hold_hours` | Normal |
+| `max_hold_days` | position open longer than `max_hold_days` days | Normal |
 
-HF defense always runs before exit condition checks. If HF is fine, check TP/SL/reversal.
+HF defense always runs before exit condition checks. If HF is fine, check TP/SL/reversal/time.
+
+**Signal reversal details:**
+- Only triggers if `signal_reversal_exit: true` (default)
+- `signal_reversal_min_score: 0` — only a strong reversal (all 3 timeframes) triggers close. Set to 1 for moderate or strong, 2 for any opposing signal.
+- `min_hold_hours` — prevents the reversal exit from firing within N hours of open. Protects against 30-minute whipsaw on noisy mid-timeframe data. Default: 2h.
+- A "strong" signal reversal means score ≥ `signal_reversal_min_score` in the opposite direction. With score=0, only a score of 3 against the position triggers.
+
+**TP suppression on strong signal:**
+- When `tp_on_strong_signal: false` (default): if the signal is still at maximum strength (all 3 timeframes aligned), take-profit is skipped. The position stays open to let winners ride.
+- Stop-loss and HF defense always apply regardless of this setting.
+- Set `tp_on_strong_signal: true` to restore fixed-TP behavior.
 
 **P&L computation for closed trades:**
 ```
@@ -411,6 +516,12 @@ Each line is a self-contained JSON object. Two entry types:
   "btc_dominance_pct": 56.3,
   "btc_dominance_prev": 55.8,
   "volatility_1h_abs": 0.8,
+  "volume_24h": 12500000000.0,
+  "funding_rate": 0.007,
+  "fear_greed": 62,
+  "usdc_utilization": 0.718,
+  "asset_utilization": 0.065,
+  "recent_liquidations": 0,
   "filters_triggered": [],
   "sources_failed": [],
   "decision": "open_long",
@@ -418,6 +529,8 @@ Each line is a self-contained JSON object. Two entry types:
   "position_open": false
 }
 ```
+
+Soft-source fields (`volume_24h`, `funding_rate`, `fear_greed`, `usdc_utilization`, `asset_utilization`, `recent_liquidations`) are `null` when the source is unavailable.
 
 ### Trade entry — open
 

@@ -70,8 +70,8 @@ run the aave-leverage-strategy for one cycle
 
 OpenClaw will:
 1. Read `config.yml`
-2. Fetch market data from CoinGecko and DeFi Llama
-3. Compute the trend signal
+2. Fetch market data — CoinGecko prices + volume, Aave MCP position, BTC dominance, perp funding rate, Fear & Greed index, Base on-chain Aave state
+3. Compute the 3-timeframe trend signal and apply 9 no-trade filters
 4. Decide whether to open, hold, or close
 5. Write a cycle entry to `trades.jsonl`
 6. Print the P&L summary
@@ -139,13 +139,26 @@ All other logic is identical.
 
 ```
 openclaw-aave-leverage-strategy/
-├── SKILL.md           # OpenClaw skill definition
-├── config.yml         # Your config (gitignored)
-├── mcp-config.json    # MCP server connection config
-├── README.md          # This file
-├── trades.jsonl       # Trade log, created at runtime (gitignored)
-└── examples/
-    └── paper-run.md   # Walkthrough of one complete paper cycle
+├── SKILL.md              # OpenClaw skill definition (strategy spec)
+├── SETUP.md              # Setup and config reference
+├── CHANGELOG.md          # Version history
+├── config.example.yml    # Config template (copy to my-config.yml)
+├── config.yml            # Your config (gitignored)
+├── trades.jsonl          # Trade log, created at runtime (gitignored)
+├── bot/
+│   ├── main.py           # Entry point — per-cycle execution loop
+│   ├── config.py         # Config dataclass
+│   ├── market.py         # Market data fetcher (6 sources)
+│   ├── onchain.py        # Aave v3 Base on-chain reads (utilization, liquidations)
+│   ├── signal.py         # 3-timeframe trend signal engine
+│   ├── filters.py        # 9 no-trade filters
+│   ├── sizing.py         # Position sizing
+│   ├── exits.py          # TP/SL/reversal/time exit logic
+│   ├── state.py          # trades.jsonl read/write
+│   └── pnl.py            # P&L summary computation
+├── tests/                # Unit tests
+└── scripts/
+    └── buy_session.py    # Purchase MCP session token
 ```
 
 ---
