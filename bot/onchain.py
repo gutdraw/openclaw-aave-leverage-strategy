@@ -105,19 +105,21 @@ def _utilization(w3: Web3, symbol: str) -> Optional[float]:
 
 
 def _recent_liquidations(w3: Web3) -> Optional[int]:
-    """Count LiquidationCall events on the Aave v3 pool in the last ~5 minutes."""
-    try:
-        topic = Web3.keccak(
-            text="LiquidationCall(address,address,address,uint256,uint256,address,bool)"
-        ).hex()
-        latest = w3.eth.block_number
-        logs = w3.eth.get_logs({
-            "address": Web3.to_checksum_address(AAVE_POOL_BASE),
-            "fromBlock": latest - _LOOKBACK_BLOCKS,
-            "toBlock":   latest,
-            "topics":    [topic],
-        })
-        return len(logs)
-    except Exception as e:
-        log.debug("liquidation log error: %s", e)
-        return None
+    """Count LiquidationCall events on the Aave v3 pool in the last ~5 minutes.
+    Falls back to a smaller block range if the RPC rejects a wide getLogs request."""
+    topic = Web3.keccak(
+        text="LiquidationCall(address,address,address,uint256,uint256,address,bool)"
+    ).hex()
+    for lookback in (_LOOKBACK_BLOCKS, 50, 20):
+        try:
+            latest = w3.eth.block_number
+            logs = w3.eth.get_logs({
+                "address": Web3.to_checksum_address(AAVE_POOL_BASE),
+                "fromBlock": latest - lookback,
+                "toBlock":   latest,
+                "topics":    [topic],
+            })
+            return len(logs)
+        except Exception as e:
+            log.debug("liquidation log error (lookback=%d): %s", lookback, e)
+    return None
