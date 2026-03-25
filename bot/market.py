@@ -10,6 +10,7 @@ import httpx
 COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_GLOBAL  = "https://api.coingecko.com/api/v3/global"
 BINANCE_PREMIUM   = "https://fapi.binance.com/fapi/v1/premiumIndex"
+BYBIT_TICKERS     = "https://api.bybit.com/v5/market/tickers"
 FEAR_GREED_URL    = "https://api.alternative.me/fng/"
 
 ASSET_TO_CG_ID: dict[str, str] = {
@@ -98,16 +99,21 @@ def fetch(
     except Exception as e:
         sources_failed.append(f"coingecko_global:{e}")
 
-    # ── Source 4: Binance perp funding rate (soft — failure logged, not blocking) ──
+    # ── Source 4: Funding rate — Binance (non-US) with Bybit fallback (US) ──
+    # Both are free, no auth. Binance returns 451 on US IPs; Bybit works globally.
     funding_rate = None
+    symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
     try:
-        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
         r = httpx.get(BINANCE_PREMIUM, params={"symbol": symbol}, timeout=timeout)
         r.raise_for_status()
-        # lastFundingRate is a decimal, e.g. 0.0001 = 0.01% per 8h → store as %
         funding_rate = float(r.json()["lastFundingRate"]) * 100
-    except Exception as e:
-        sources_failed.append(f"binance_funding:{e}")
+    except Exception as binance_err:
+        try:
+            r = httpx.get(BYBIT_TICKERS, params={"category": "linear", "symbol": symbol}, timeout=timeout)
+            r.raise_for_status()
+            funding_rate = float(r.json()["result"]["list"][0]["fundingRate"]) * 100
+        except Exception as bybit_err:
+            sources_failed.append(f"funding_rate:binance={binance_err} bybit={bybit_err}")
 
     # ── Source 5: Fear & Greed Index (soft — failure logged, not blocking) ────
     fear_greed = None
