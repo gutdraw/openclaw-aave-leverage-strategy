@@ -24,7 +24,13 @@ def compute(change_1h: float, change_24h: float, change_7d: float) -> Signal:
       1 → moderate_short → short  (half size)
       0 → strong_short   → short  (full size)
     """
-    positives = sum([change_1h > 0, change_24h > 0, change_7d > 0])
+    changes = [change_1h, change_24h, change_7d]
+    positives = sum(c > 0 for c in changes)
+    negatives = sum(c < 0 for c in changes)
+
+    # All changes are exactly zero — data missing or market genuinely flat → hold
+    if positives == 0 and negatives == 0:
+        return Signal(score=0, label="hold", multiplier=0.0, direction="none")
 
     if positives == 3:
         return Signal(score=3, label="strong_long",    multiplier=1.0, direction="long")

@@ -91,6 +91,13 @@ def fetch(
             f"Failures: {sources_failed}"
         )
 
+    # Price is mandatory — without it we cannot size positions or compute P&L
+    if price is None:
+        raise RuntimeError(
+            f"insufficient_data: price unavailable (CoinGecko failed). "
+            f"Failures: {sources_failed}"
+        )
+
     return MarketData(
         price=price or 0.0,
         change_1h=change_1h or 0.0,
