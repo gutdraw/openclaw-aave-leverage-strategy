@@ -31,6 +31,7 @@ import yaml
 import bot.executor as executor
 import bot.filters as filters
 import bot.market as market
+import bot.ohlcv as ohlcv
 import bot.pnl as pnl
 import bot.signal as signal
 import bot.sizing as sizing
@@ -135,7 +136,23 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         data.health_factor = _paper_health_factor(open_trade, data.price, cfg, eff_supply, eff_borrow)
 
     # ── 3. Signal ─────────────────────────────────────────────────────────
-    sig = signal.compute(data.change_1h, data.change_24h, data.change_7d)
+    # Primary: OHLCV-based EMA crossover + RSI (Coinbase → Kraken fallback)
+    # Secondary: CoinGecko 3-timeframe momentum
+    # Combined: both must agree on direction for a trade; disagreement = hold
+    cg_sig   = signal.compute(data.change_1h, data.change_24h, data.change_7d)
+    tech     = ohlcv.fetch(cfg.asset)
+    tech_sig = ohlcv.to_signal(tech) if tech is not None else None
+
+    if tech_sig is not None and tech_sig.direction != "none":
+        if tech_sig.direction == cg_sig.direction:
+            # Both agree — use the stronger (lower multiplier wins if disagreeing on strength)
+            sig = tech_sig if tech_sig.multiplier >= cg_sig.multiplier else cg_sig
+        else:
+            # Disagreement — hold, don't trade
+            sig = signal.Signal(score=0, label="hold", multiplier=0.0, direction="none")
+    else:
+        # Tech signal unavailable — fall back to CoinGecko only
+        sig = cg_sig
 
     cycle_entry: dict = {
         "type": "cycle",
@@ -159,6 +176,11 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         "recent_liquidations": data.recent_liquidations,
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
+        "cg_signal": cg_sig.label,
+        "tech_signal": tech_sig.label if tech_sig is not None else None,
+        "tech_ema_bull": tech.ema_bull if tech is not None else None,
+        "tech_rsi": tech.rsi if tech is not None else None,
+        "tech_source": tech.source if tech is not None else None,
     }
 
     # Derive the position_id for the current open trade (if any)
