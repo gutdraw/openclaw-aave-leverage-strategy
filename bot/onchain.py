@@ -107,7 +107,7 @@ def _utilization(w3: Web3, symbol: str) -> Optional[float]:
 def _recent_liquidations(w3: Web3) -> Optional[int]:
     """Count LiquidationCall events on the Aave v3 pool in the last ~5 minutes.
     Falls back to a smaller block range if the RPC rejects a wide getLogs request."""
-    topic = Web3.keccak(
+    topic = "0x" + Web3.keccak(
         text="LiquidationCall(address,address,address,uint256,uint256,address,bool)"
     ).hex()
     for lookback in (_LOOKBACK_BLOCKS, 50, 20):
