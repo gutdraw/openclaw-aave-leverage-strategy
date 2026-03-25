@@ -51,8 +51,10 @@ _TOTAL_SUPPLY_ABI = [{
     "type": "function",
 }]
 
-# Base produces a block ~every 2 seconds; 150 blocks ≈ 5 minutes
-_LOOKBACK_BLOCKS = 150
+# Default lookback for eth_getLogs.
+# Alchemy free tier: max 10 blocks. PAYG: up to 2000.
+# Base produces ~1 block/2s → 10 blocks ≈ 20 seconds, 150 blocks ≈ 5 minutes.
+_LOOKBACK_BLOCKS_DEFAULT = 10
 
 
 @dataclass
@@ -62,7 +64,7 @@ class OnChainData:
     recent_liquidations: Optional[int]  # LiquidationCall count in last ~5 min
 
 
-def fetch(asset: str, rpc_url: str = "https://mainnet.base.org") -> OnChainData:
+def fetch(asset: str, rpc_url: str = "https://mainnet.base.org", lookback_blocks: int = _LOOKBACK_BLOCKS_DEFAULT) -> OnChainData:
     """
     Fetch on-chain Aave v3 state from Base. Never raises — returns None fields on error.
     A single Web3 connection is created per call (read-only, no wallet needed).
@@ -73,7 +75,7 @@ def fetch(asset: str, rpc_url: str = "https://mainnet.base.org") -> OnChainData:
 
         usdc_util  = _utilization(w3, "USDC")
         asset_util = _utilization(w3, asset)
-        recent_liq = _recent_liquidations(w3)
+        recent_liq = _recent_liquidations(w3, lookback_blocks)
 
     except Exception as e:
         log.debug("onchain.fetch error: %s", e)
@@ -104,22 +106,41 @@ def _utilization(w3: Web3, symbol: str) -> Optional[float]:
         return None
 
 
-def _recent_liquidations(w3: Web3) -> Optional[int]:
-    """Count LiquidationCall events on the Aave v3 pool in the last ~5 minutes.
-    Falls back to a smaller block range if the RPC rejects a wide getLogs request."""
+def _recent_liquidations(w3: Web3, lookback: int) -> Optional[int]:
+    """Count LiquidationCall events on the Aave v3 pool within the last `lookback` blocks.
+    Uses raw requests to bypass web3.py serialization and ensure hex block params."""
+    import requests as _req
     topic = "0x" + Web3.keccak(
         text="LiquidationCall(address,address,address,uint256,uint256,address,bool)"
     ).hex()
-    for lookback in (_LOOKBACK_BLOCKS, 50, 20):
-        try:
-            latest = w3.eth.block_number
-            logs = w3.eth.get_logs({
-                "address": Web3.to_checksum_address(AAVE_POOL_BASE),
-                "fromBlock": latest - lookback,
-                "toBlock":   latest,
-                "topics":    [topic],
-            })
-            return len(logs)
-        except Exception as e:
-            log.debug("liquidation log error (lookback=%d): %s", lookback, e)
-    return None
+    try:
+        latest_hex = _req.post(
+            w3.provider.endpoint_uri,
+            json={"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1},
+            timeout=10,
+        ).json()["result"]
+        latest_int = int(latest_hex, 16)
+        from_hex = hex(latest_int - lookback)
+
+        resp = _req.post(
+            w3.provider.endpoint_uri,
+            json={
+                "jsonrpc": "2.0",
+                "method": "eth_getLogs",
+                "params": [{
+                    "address": Web3.to_checksum_address(AAVE_POOL_BASE),
+                    "fromBlock": from_hex,
+                    "toBlock": latest_hex,
+                    "topics": [topic],
+                }],
+                "id": 2,
+            },
+            timeout=10,
+        ).json()
+        if "error" in resp:
+            log.debug("liquidation log RPC error: %s", resp["error"])
+            return None
+        return len(resp.get("result", []))
+    except Exception as e:
+        log.debug("liquidation log error: %s", e)
+        return None

@@ -122,7 +122,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     btc_dom_prev: Optional[float] = state.get_last_btc_dominance(entries)
 
     # ── 2. Market data ────────────────────────────────────────────────────
-    data, sources_failed = market.fetch(cfg.asset, mcp, rpc_url=cfg.rpc_url)
+    data, sources_failed = market.fetch(cfg.asset, mcp, rpc_url=cfg.rpc_url, onchain_lookback_blocks=cfg.onchain_lookback_blocks)
 
     # In paper mode, replace on-chain HF with a simulated value derived from
     # the paper position — real wallet HF belongs to whatever is live on-chain

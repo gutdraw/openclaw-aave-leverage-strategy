@@ -60,6 +60,7 @@ def fetch(
     mcp_client,
     timeout: int = 15,
     rpc_url: str = "https://mainnet.base.org",
+    onchain_lookback_blocks: int = 10,
 ) -> tuple[MarketData, list[str]]:
     """
     Fetch from all 3 sources and return (MarketData, sources_failed).
@@ -141,7 +142,7 @@ def fetch(
 
     # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
     from bot.onchain import fetch as onchain_fetch
-    oc = onchain_fetch(asset, rpc_url)
+    oc = onchain_fetch(asset, rpc_url, onchain_lookback_blocks)
     if oc.usdc_utilization is None and oc.recent_liquidations is None:
         sources_failed.append("onchain:all_fields_unavailable")
 
