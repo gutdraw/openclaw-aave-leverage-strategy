@@ -24,16 +24,18 @@ but no on-chain transactions are submitted until you explicitly go live.
 | Position sizing | Scales seed size by signal confidence (full / half) |
 | Paper trading | Full simulation, no chain calls, identical log output |
 | P&L tracking | Append-only `trades.jsonl` — entry price, exit price, net P&L per trade |
-| HF defense | Auto-reduce at HF < 1.35, auto-close at HF < 1.20 |
+| HF defense | Longs: reduce < 1.35, close < 1.20. Shorts: reduce < 1.09, close < 1.05 |
 | TP / SL | Configurable % from entry, checked every cycle |
 
 ## Supported assets and directions
 
-| Asset | Long | Short | Max leverage |
-|-------|------|-------|--------------|
-| WETH | Supply WETH, borrow USDC | Supply USDC, borrow WETH | 4.5x (config cap: 3x) |
-| cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) |
-| wstETH | Supply wstETH, borrow WETH | — (not supported) | 4.3x (config cap: 3x) |
+| Asset | Long | Short | Long max leverage | Short max leverage |
+|-------|------|-------|-------------------|--------------------|
+| WETH | Supply WETH, borrow USDC | Supply USDC, borrow WETH | 4.5x (config cap: 3x) | **2x hard cap** (HF ~1.17 at open) |
+| cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) | **2x hard cap** (HF ~1.17 at open) |
+| wstETH | Supply wstETH, borrow WETH | — (not supported) | 4.3x (config cap: 3x) | — |
+
+**Why 2x is the short cap:** USDC liquidation threshold on Aave v3 Base is 78%. At 2x short (supply=3×seed USDC, borrow=2×seed BTC/ETH), opening HF = 3×0.78/2 = **1.17**. At 3x short, HF = 4×0.78/3 = **1.04** — one small adverse move causes liquidation. The bot enforces this cap in `sizing.py` regardless of `leverage` config.
 
 The bot trades both longs and shorts automatically based on the trend signal:
 - 3/3 or 2/3 timeframes positive → long
@@ -137,8 +139,9 @@ The file is gitignored — it contains your wallet address.
 | `short_borrow_asset` | string | `"WETH"` | Asset to borrow for shorts: `WETH` or `cbBTC`. |
 | `short_position_id` | string | `"USDC/WETH"` | Short position ID for `prepare_close`. Must match `short_borrow_asset`. |
 | `user_address` | string | — | Your dedicated bot wallet address. **Required. Never share with another bot instance.** |
-| `leverage` | float | `3.0` | Leverage applied to every new position (long and short). |
-| `max_leverage` | float | `4.0` | Hard cap. The MCP server also enforces its own ceiling per asset. |
+| `leverage` | float | `3.0` | Leverage for long positions (WETH max safe 4.5x, cbBTC 3.3x). |
+| `max_leverage` | float | `4.0` | Hard cap for longs. MCP server also enforces per-asset ceiling. |
+| `short_max_leverage` | float | `2.0` | Hard cap for shorts. Enforced in code regardless of `leverage`. 3x short HF ~1.04. |
 | `base_position_pct` | float | `0.20` | Fraction of total collateral used as seed on a strong signal (1.0 multiplier). |
 | `strong_signal_size` | float | `1.0` | Multiplier on `base_position_pct` for a strong signal (3/3 or 0/3 timeframes). |
 | `moderate_signal_size` | float | `0.5` | Multiplier for a moderate signal (2/3 or 1/3 timeframes). |
@@ -147,9 +150,12 @@ The file is gitignored — it contains your wallet address.
 | `max_borrow_apr` | float | `8.0` | Skip new entries if USDC borrow APR exceeds this %. |
 | `max_volatility_1h` | float | `5.0` | Skip entire cycle if 1h price move exceeds this % in either direction. |
 | `btc_dominance_rise_threshold` | float | `2.0` | Suppress longs if BTC dom rose > this %; suppress shorts if BTC dom fell > this %. |
-| `hf_defense_reduce` | float | `1.35` | Call `prepare_reduce` if health factor drops below this. |
-| `hf_defense_close` | float | `1.20` | Force close if health factor drops below this. |
-| `min_open_hf` | float | `1.30` | Skip opening if current health factor is below this. |
+| `hf_defense_reduce` | float | `1.35` | Call `prepare_reduce` if HF drops below this (longs). |
+| `hf_defense_close` | float | `1.20` | Force close if HF drops below this (longs). |
+| `min_open_hf` | float | `1.30` | Skip opening a long if current HF is below this. |
+| `short_hf_defense_reduce` | float | `1.09` | Call `prepare_reduce` if HF drops below this (shorts). ~7% adverse move at 2x. Must be < 1.17 (2x short open HF). |
+| `short_hf_defense_close` | float | `1.05` | Force close if HF drops below this (shorts). ~11% adverse move at 2x. Liquidation is at ~17% adverse. |
+| `short_min_open_hf` | float | `1.12` | Skip opening a short if current HF is below this. |
 
 **To go live:** change `paper_trading: false` in `config.yml`. All other behavior is identical.
 
@@ -557,8 +563,8 @@ The following limits cannot be overridden by `config.yml`:
 
 | Contract | Address |
 |----------|---------|
-| LeverageRouterV3 | `0x7a7956cb5954588188601A612c820df64ecd23D6` |
-| LeverageVaultV3 | `0x6698A041bA23A8d4b2c91200859475e88A969f07` |
+| LeverageRouterV4 | `0x4A60C1E7d78DA2A61007fE21d282a859D3906724` |
+| LeverageVaultV4 | `0xf2A51d441E6bA96c37fD0024115DccF03764478f` |
 | Aave v3 Pool | `0xA238Dd80C259a72e81d7e4664a9801593F98d1c5` |
 
 Always verify `step.contract` against these addresses before executing any live transaction.

@@ -32,10 +32,18 @@ class BotConfig:
     max_borrow_apr: float = 8.0
     btc_dominance_rise_threshold: float = 2.0
 
-    # ── Health factor thresholds ──────────────────────────────────────────
+    # ── Health factor thresholds — longs ──────────────────────────────────
     min_open_hf: float = 1.30
     hf_defense_close: float = 1.20
     hf_defense_reduce: float = 1.35
+
+    # ── Health factor thresholds — shorts ─────────────────────────────────
+    # 2x short (supply=3×seed USDC, borrow=2×seed cbBTC/WETH) opens at HF ~1.17.
+    # Short-specific thresholds must be below 1.17 to avoid immediate auto-close.
+    short_max_leverage: float = 2.0    # hard cap — 3x short HF ~1.04 (near liquidation)
+    short_min_open_hf: float = 1.12   # skip open if HF < this (buffer below 1.17)
+    short_hf_defense_close: float = 1.05  # force close if HF drops here (~11% adverse move at 2x)
+    short_hf_defense_reduce: float = 1.09  # reduce if HF drops here (~7% adverse move at 2x)
 
     # ── Exit rules ────────────────────────────────────────────────────────
     take_profit_pct: float = 5.0

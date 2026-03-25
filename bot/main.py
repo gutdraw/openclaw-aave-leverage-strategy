@@ -106,16 +106,22 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     if open_trade is not None:
         hf = data.health_factor
 
-        if hf < cfg.hf_defense_close:
-            log.warning("HF %.3f < %.3f — force close", hf, cfg.hf_defense_close)
+        # Use direction-aware thresholds: 2x short opens at HF ~1.17, so short
+        # thresholds must be below that to avoid triggering immediately after open.
+        is_short_pos = open_direction == "short"
+        hf_close  = cfg.short_hf_defense_close  if is_short_pos else cfg.hf_defense_close
+        hf_reduce = cfg.short_hf_defense_reduce if is_short_pos else cfg.hf_defense_reduce
+
+        if hf < hf_close:
+            log.warning("HF %.3f < %.3f — force close", hf, hf_close)
             res = executor.close_position(pos_id, cfg, mcp, signer)
             trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res)
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": "hf_close"})
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
 
-        if hf < cfg.hf_defense_reduce:
-            log.warning("HF %.3f < %.3f — reduce", hf, cfg.hf_defense_reduce)
+        if hf < hf_reduce:
+            log.warning("HF %.3f < %.3f — reduce", hf, hf_reduce)
             target_lev = max(cfg.leverage / 2, 1.5)
             executor.reduce_position(pos_id, open_direction, target_lev, cfg, mcp, signer)
             cycle_entry["decision"] = "hf_reduce"
@@ -166,7 +172,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             state.append_entry(cfg.trades_file, cycle_entry)
             return cycle_entry
 
-        if data.health_factor < cfg.min_open_hf and data.health_factor != 999.0:
+        min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
+        if data.health_factor < min_hf and data.health_factor != 999.0:
             log.info("HF %.3f below min_open_hf %.3f — skip", data.health_factor, cfg.min_open_hf)
             cycle_entry["decision"] = "skip_min_hf"
             state.append_entry(cfg.trades_file, cycle_entry)

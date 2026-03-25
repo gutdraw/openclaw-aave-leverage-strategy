@@ -46,10 +46,12 @@ def compute(
         return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)
 
     if signal.direction == "short":
+        lev = min(cfg.leverage, cfg.short_max_leverage)  # hard cap: 2x for shorts
         supply = seed_usd                          # USDC collateral (stable, 1:1 USD)
-        borrow = seed_usd * (cfg.leverage - 1) / price  # asset units to borrow/short
+        borrow = seed_usd * (lev - 1) / price     # asset units to borrow/short
     else:
+        lev = cfg.leverage
         supply = seed_usd / price                  # asset units (e.g. ETH)
-        borrow = supply * (cfg.leverage - 1)       # USDC to borrow
+        borrow = supply * (lev - 1)               # USDC to borrow
 
     return PositionSize(seed_usd=seed_usd, supply=supply, borrow=borrow)
