@@ -1,6 +1,47 @@
 # Changelog
 
+## [1.1.1] — 2026-03-25
+
+### Fixed
+- **RSI overbought scoring** (`ohlcv.py`): EMA-bull + RSI > 75 (overbought) incorrectly
+  scored as `moderate_long` instead of `hold`. Added explicit `overbought`/`oversold`
+  guards — those edge cases now correctly resolve to hold.
+- **Position size truthiness bug** (`main.py`): `eff_supply or float(...)` evaluated
+  `False` when effective size was 0.0, producing wrong P&L and HF values. Replaced with
+  explicit `> 0` comparisons throughout.
+- **Concurrent write corruption** (`state.py`): `append_entry` now acquires an exclusive
+  `fcntl.flock` before writing, preventing interleaved output under concurrent processes.
+- **Malformed log line handling** (`state.py`): `load_entries` now skips malformed JSON
+  lines with a warning instead of crashing the cycle.
+- **Deferred import** (`onchain.py`): moved `import requests` from inside the function
+  body to top-level; replaced with `httpx` for consistency.
+- **Config example default** (`config.example.yml`): `max_recent_liquidations` corrected
+  from `10` to `3` to match the `config.py` default.
+
 ## [1.1.0] — 2026-03-25
+
+### Added — OHLCV signal (primary signal engine)
+- **EMA crossover + RSI on hourly candles**: Coinbase Exchange public API
+  (`api.exchange.coinbase.com`) → Kraken fallback. EMA(12/26) crossover gives trend
+  direction; RSI(14) gives momentum zone. Scores 0–4 map to the same labels as the
+  CoinGecko 3-timeframe engine (`strong_long` / `moderate_long` / `hold` /
+  `moderate_short` / `strong_short`).
+- **Signal hierarchy changed**: OHLCV is now the primary signal. CoinGecko 3-timeframe
+  is used only as a last-resort fallback when both Coinbase and Kraken are unavailable.
+- Cycle entry now includes `tech_signal`, `tech_ema_bull`, `tech_rsi`, `tech_source`,
+  and `cg_signal` fields for full auditability.
+
+### Added — Position increase (moderate → strong signal upgrade)
+- When a `moderate_long` or `moderate_short` position is open and the signal upgrades
+  to `strong_long` / `strong_short`, the bot tops up the half-size position to full
+  size instead of doing nothing. Only one increase per trade is allowed.
+- `compute_increase()` added to `sizing.py` — computes the delta between current seed
+  and the full-strength target.
+- `increase_position()` added to `executor.py` — paper stub logs; live mode calls
+  `prepare_increase` on the MCP server.
+- `get_effective_size()` and `has_been_increased()` added to `state.py` — read increase
+  entries from `trades.jsonl` to compute accurate effective supply/borrow for P&L and HF.
+- `prepare_increase()` added to `mcp_client.py`.
 
 ### Added — Exit strategy
 - **Signal reversal exit**: close position when all 3 timeframes flip against it

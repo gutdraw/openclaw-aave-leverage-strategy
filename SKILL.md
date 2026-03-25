@@ -1,7 +1,7 @@
 ---
 name: aave-leverage-strategy
 description: Autonomous trend-following strategy for Aave v3 leverage on Base. Runs on a cron schedule, researches market conditions, sizes positions by signal confidence, and tracks P&L in a persistent log. Paper trading by default.
-version: 1.1.0
+version: 1.1.1
 author: gutdraw
 tags: [defi, aave, leverage, base, crypto, trading, autonomous, strategy, paper-trading]
 requires_skill: aave-leverage
@@ -20,7 +20,7 @@ but no on-chain transactions are submitted until you explicitly go live.
 | Capability | Detail |
 |------------|--------|
 | Market research | CoinGecko 1h/24h/7d price + volume, USDC borrow cost, BTC dominance, perp funding rate, Fear & Greed index, Aave v3 on-chain utilization |
-| Signal model | 3-timeframe trend score + 9 no-trade filters |
+| Signal model | OHLCV EMA(12/26)+RSI(14) primary; CoinGecko 3-timeframe last-resort fallback; 9 no-trade filters |
 | Exit strategy | TP/SL, signal reversal (with min-hold guard), time-based (max_hold_days) |
 | Position sizing | Scales seed size by signal confidence (full / half) |
 | Paper trading | Full simulation, no chain calls, identical log output |
@@ -38,9 +38,10 @@ but no on-chain transactions are submitted until you explicitly go live.
 
 **Why 2x is the short cap:** USDC liquidation threshold on Aave v3 Base is 78%. At 2x short (supply=3×seed USDC, borrow=2×seed BTC/ETH), opening HF = 3×0.78/2 = **1.17**. At 3x short, HF = 4×0.78/3 = **1.04** — one small adverse move causes liquidation. The bot enforces this cap in `sizing.py` regardless of `leverage` config.
 
-The bot trades both longs and shorts automatically based on the trend signal:
-- 3/3 or 2/3 timeframes positive → long
-- 1/3 or 0/3 timeframes positive → short
+The bot trades both longs and shorts automatically based on the OHLCV signal:
+- EMA bull + RSI bullish zone → long (strong or moderate depending on RSI strength)
+- EMA bear + RSI bearish zone → short (strong or moderate)
+- Conflicting or overbought/oversold → hold
 
 Configure the short asset via `short_borrow_asset` and `short_position_id` in `config.yml`.
 
@@ -276,6 +277,27 @@ GET https://api.alternative.me/fng/?limit=1
 Field to extract: `data[0].value` (integer 0–100).
 0 = extreme fear, 100 = extreme greed.
 
+### Source 7 — OHLCV candles for EMA+RSI signal (primary signal source)
+
+Tries Coinbase Exchange first, falls back to Kraken. Both are free, no auth required,
+accessible globally including US IPs.
+
+```
+GET https://api.exchange.coinbase.com/products/{pair}/candles?granularity=3600
+```
+Returns ~350 hourly candles newest-first. Asset→pair: WETH/wstETH → `ETH-USD`, cbBTC → `BTC-USD`.
+
+```
+GET https://api.kraken.com/0/public/OHLC?pair={pair}&interval=60
+```
+Returns ~720 hourly candles oldest-first. Asset→pair: WETH/wstETH → `ETHUSD`, cbBTC → `XBTUSD`.
+
+Compute EMA(12), EMA(26), RSI(14) on close prices. See Signal model for scoring rules.
+
+If both Coinbase and Kraken fail, the signal engine falls back to the CoinGecko
+3-timeframe score (Source 1). This is a soft fallback — OHLCV failure is logged but
+does not block the cycle.
+
 ### Fallback behavior
 
 Sources 1-3 (CoinGecko prices, get_position, CoinGecko global) are required. Sources 4-6 are soft — if unavailable, the corresponding filter is simply skipped.
@@ -291,18 +313,31 @@ Sources 1-3 (CoinGecko prices, get_position, CoinGecko global) are required. Sou
 
 ## Signal model
 
-### Step 1 — Compute trend score
+### Step 1 — Compute OHLCV signal (primary)
 
-Count how many of the three timeframes show positive price change:
+Fetch hourly candles from Coinbase Exchange → Kraken fallback. Compute:
+- **EMA crossover**: EMA(12) vs EMA(26) on close prices → trend direction
+- **RSI(14)**: Wilder smoothing on hourly closes → momentum zone
 
-| Positives (out of 3) | Signal | Direction | Multiplier | Action |
-|---------------------|--------|-----------|------------|--------|
-| 3 | `strong_long` | long | 1.0 | Open long at full size |
-| 2 | `moderate_long` | long | 0.5 | Open long at half size |
-| 1 | `moderate_short` | short | 0.5 | Open short at half size |
-| 0 | `strong_short` | short | 1.0 | Open short at full size |
+RSI thresholds:
+- Bullish zone: 40 ≤ RSI ≤ 75
+- Bearish zone: 25 ≤ RSI ≤ 60
+- Overbought: RSI > 75 (not a buy signal)
+- Oversold: RSI < 25 (not a sell signal)
 
-Example: ETH is +0.8% (1h), +1.2% (24h), -0.5% (7d) → 2 positives → `moderate_long`
+| EMA | RSI zone | Score | Signal | Direction | Multiplier |
+|-----|----------|-------|--------|-----------|------------|
+| Bull | Bullish (40–75) | 4 | `strong_long` | long | 1.0 |
+| Bull | Not bearish, not overbought | 3 | `moderate_long` | long | 0.5 |
+| Bear | Bearish (25–60) | 1 | `moderate_short` | short | 0.5 |
+| Bear | Not bullish, not oversold | 0 | `strong_short` | short | 1.0 |
+| Conflicting / overbought / oversold | — | 2 | `hold` | none | 0.0 |
+
+If both Coinbase and Kraken fail, fall back to the CoinGecko 3-timeframe signal
+(count how many of 1h/24h/7d price changes are positive: 3→`strong_long`,
+2→`moderate_long`, 1→`moderate_short`, 0→`strong_short`).
+
+Example: EMA(12) > EMA(26), RSI = 58 (bullish zone) → score 4 → `strong_long`
 
 ### Step 2 — Apply no-trade filters (in priority order)
 
@@ -403,11 +438,15 @@ Scan `trades.jsonl` (if it exists) to find:
 - The last cycle's `btc_dominance_pct` for the BTC dominance filter
 
 **Step 3 — Fetch market data**
-Fetch all three sources (CoinGecko prices, DeFi Llama, CoinGecko global).
-If fewer than 2 succeed, write a skipped cycle entry and exit.
+Fetch all sources. CoinGecko prices, `get_position`, and CoinGecko global are required.
+Sources 4–7 (funding rate, F&G, on-chain, OHLCV) are soft — failure is logged but does not
+block the cycle. If fewer than 2 required sources succeed, write a skipped cycle entry and exit.
 
-**Step 4 — Compute trend score**
-Apply the signal model to the fetched price changes.
+**Step 4 — Compute signal**
+Attempt to fetch OHLCV candles (Coinbase → Kraken fallback) and compute EMA(12/26) crossover
++ RSI(14). If OHLCV succeeds, use that signal exclusively. If both OHLCV sources fail, fall
+back to the CoinGecko 3-timeframe score. Record both `tech_signal` and `cg_signal` in the
+cycle entry for auditability.
 
 **Step 5 — Apply no-trade filters**
 Check all 9 filters in priority order. Record which filters triggered.
@@ -430,6 +469,11 @@ Call `get_position(user_address)` to get current HF and on-chain state.
     (exit_reason: `signal_reversal`)
   - If `max_hold_days > 0` AND position age > `max_hold_days` → close
     (exit_reason: `max_hold_days`)
+  - d. Else check for **signal upgrade** (moderate → strong): if the open position is
+    `moderate_long` or `moderate_short` and the current signal upgrades to `strong_long`
+    or `strong_short` in the same direction — and the position has not already been
+    increased this trade — top up to full size by calling `prepare_increase`. Write an
+    `action=increase` entry to `trades.jsonl`.
 
 **Step 7 — Open position (if no position open and signal is actionable)**
 - Compute `seed_usd` from sizing formula
@@ -507,30 +551,37 @@ Each line is a self-contained JSON object. Two entry types:
   "ts": "2026-03-22T14:00:00Z",
   "paper": true,
   "asset": "WETH",
-  "current_price": 3150.00,
-  "price_change_1h": 0.8,
-  "price_change_24h": 1.2,
-  "price_change_7d": 3.1,
-  "trend_score": "strong_long",
-  "usdc_borrow_apr": 4.2,
+  "price": 3150.00,
+  "change_1h": 0.8,
+  "change_24h": 1.2,
+  "change_7d": 3.1,
+  "signal": "strong_long",
+  "direction": "long",
+  "score": 3,
+  "cg_signal": "strong_long",
+  "tech_signal": "strong_long",
+  "tech_ema_bull": true,
+  "tech_rsi": 58.4,
+  "tech_source": "coinbase",
+  "borrow_apr": 4.2,
   "btc_dominance_pct": 56.3,
-  "btc_dominance_prev": 55.8,
-  "volatility_1h_abs": 0.8,
-  "volume_24h": 12500000000.0,
   "funding_rate": 0.007,
   "fear_greed": 62,
+  "volume_24h": 12500000000.0,
   "usdc_utilization": 0.718,
   "asset_utilization": 0.065,
   "recent_liquidations": 0,
-  "filters_triggered": [],
+  "health_factor": 999.0,
   "sources_failed": [],
-  "decision": "open_long",
-  "reason": "all 3 timeframes positive, no filters triggered",
-  "position_open": false
+  "paper_trading": true,
+  "decision": "open_long"
 }
 ```
 
-Soft-source fields (`volume_24h`, `funding_rate`, `fear_greed`, `usdc_utilization`, `asset_utilization`, `recent_liquidations`) are `null` when the source is unavailable.
+`tech_signal`, `tech_ema_bull`, `tech_rsi`, `tech_source` are `null` when both Coinbase
+and Kraken OHLCV sources fail (CoinGecko fallback was used). Soft-source fields
+(`funding_rate`, `fear_greed`, `usdc_utilization`, `asset_utilization`,
+`recent_liquidations`) are `null` when unavailable.
 
 ### Trade entry — open
 
@@ -551,6 +602,30 @@ Soft-source fields (`volume_24h`, `funding_rate`, `fear_greed`, `usdc_utilizatio
   "signal": "strong_long"
 }
 ```
+
+### Trade entry — increase (signal upgrade: moderate → strong)
+
+Written when a half-size position is topped up to full size.
+
+```json
+{
+  "type": "trade",
+  "ts": "2026-03-22T16:00:00Z",
+  "paper": true,
+  "action": "increase",
+  "asset": "WETH",
+  "direction": "long",
+  "position_id": "WETH/USDC",
+  "signal": "strong_long",
+  "price": 3200.00,
+  "add_supply": 0.015,
+  "add_borrow": 45.00,
+  "add_seed_usd": 50.00
+}
+```
+
+Only one increase is allowed per trade. `get_effective_size()` sums the original open
+entry + any increase entry to compute accurate P&L and HF for subsequent cycles.
 
 ### Trade entry — close
 
