@@ -122,7 +122,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     btc_dom_prev: Optional[float] = state.get_last_btc_dominance(entries)
 
     # ── 2. Market data ────────────────────────────────────────────────────
-    data, sources_failed = market.fetch(cfg.asset, mcp)
+    data, sources_failed = market.fetch(cfg.asset, mcp, rpc_url=cfg.rpc_url)
 
     # In paper mode, replace on-chain HF with a simulated value derived from
     # the paper position — real wallet HF belongs to whatever is live on-chain
@@ -150,6 +150,9 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         "funding_rate": data.funding_rate,
         "fear_greed": data.fear_greed,
         "volume_24h": data.volume_24h,
+        "usdc_utilization": round(data.usdc_utilization, 4) if data.usdc_utilization is not None else None,
+        "asset_utilization": round(data.asset_utilization, 4) if data.asset_utilization is not None else None,
+        "recent_liquidations": data.recent_liquidations,
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
     }

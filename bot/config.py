@@ -72,6 +72,16 @@ class BotConfig:
     # SL always applies. Set True to restore fixed-TP behaviour regardless of signal.
     tp_on_strong_signal: bool = False
 
+    # ── On-chain ──────────────────────────────────────────────────────────
+    # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).
+    # For live mode with a private key, set this to a paid RPC for reliability.
+    rpc_url: str = "https://mainnet.base.org"
+    # Suppress new entries if USDC pool utilization exceeds this (borrow APR spike risk).
+    max_usdc_utilization: float = 0.92
+    # Suppress new entries if this many liquidations occurred in the last ~5 min.
+    # A spike signals a cascade — don't open leveraged positions into one.
+    max_recent_liquidations: int = 10
+
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True
     paper_seed_usd: float = 0.0   # if > 0, use this as collateral in paper mode (no real funds needed)

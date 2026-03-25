@@ -117,7 +117,27 @@ def apply_all(
                 decision="skip_volume",
             )
 
-    # ── Filter 7: Position overlap ────────────────────────────────────────
+    # ── Filter 7: USDC utilization (borrow APR spike risk) ───────────────
+    # Above the interest rate kink (~90%), variable borrow APR climbs steeply.
+    # Suppress new entries if we're already in spike territory.
+    if open_trade is None and data.usdc_utilization is not None:
+        if data.usdc_utilization > cfg.max_usdc_utilization:
+            return FilterResult(
+                blocked=True,
+                triggered=["usdc_utilization"],
+                decision="skip_usdc_utilization",
+            )
+
+    # ── Filter 8: Recent liquidation cascade ──────────────────────────────
+    if open_trade is None and data.recent_liquidations is not None:
+        if data.recent_liquidations > cfg.max_recent_liquidations:
+            return FilterResult(
+                blocked=True,
+                triggered=["liquidation_cascade"],
+                decision="skip_liquidation_cascade",
+            )
+
+    # ── Filter 9: Position overlap ─────────────────────────────────────────
     if open_trade is not None:
         return FilterResult(
             blocked=True,

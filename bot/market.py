@@ -47,15 +47,19 @@ class MarketData:
     health_factor: float          # current Aave HF (999 = no debt)
     total_collateral_usd: float
     position_data: dict           # raw get_position response
-    volume_24h: Optional[float] = None    # 24h spot volume in USD (from CoinGecko)
-    funding_rate: Optional[float] = None  # Binance perp funding rate in % per 8h (None = unavailable)
-    fear_greed: Optional[int] = None      # Crypto Fear & Greed Index 0-100 (None = unavailable)
+    volume_24h: Optional[float] = None        # 24h spot volume in USD (from CoinGecko)
+    funding_rate: Optional[float] = None      # perp funding rate in % per 8h (None = unavailable)
+    fear_greed: Optional[int] = None          # Crypto Fear & Greed Index 0-100 (None = unavailable)
+    usdc_utilization: Optional[float] = None  # Aave v3 Base USDC pool utilization 0–1
+    asset_utilization: Optional[float] = None # Aave v3 Base supply-asset utilization 0–1
+    recent_liquidations: Optional[int] = None # LiquidationCall events in last ~5 min
 
 
 def fetch(
     asset: str,
     mcp_client,
     timeout: int = 15,
+    rpc_url: str = "https://mainnet.base.org",
 ) -> tuple[MarketData, list[str]]:
     """
     Fetch from all 3 sources and return (MarketData, sources_failed).
@@ -135,7 +139,13 @@ def fetch(
             _fr_errors.append(f"okx:{e}")
             sources_failed.append(f"funding_rate:{'; '.join(_fr_errors)}")
 
-    # ── Source 5: Fear & Greed Index (soft — failure logged, not blocking) ────
+    # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
+    from bot.onchain import fetch as onchain_fetch
+    oc = onchain_fetch(asset, rpc_url)
+    if oc.usdc_utilization is None and oc.recent_liquidations is None:
+        sources_failed.append("onchain:all_fields_unavailable")
+
+    # ── Source 6: Fear & Greed Index (soft — failure logged, not blocking) ────
     fear_greed = None
     try:
         r = httpx.get(FEAR_GREED_URL, params={"limit": 1}, timeout=timeout)
@@ -171,4 +181,7 @@ def fetch(
         volume_24h=volume_24h,
         funding_rate=funding_rate,
         fear_greed=fear_greed,
+        usdc_utilization=oc.usdc_utilization,
+        asset_utilization=oc.asset_utilization,
+        recent_liquidations=oc.recent_liquidations,
     ), sources_failed
