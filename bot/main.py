@@ -137,22 +137,15 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
 
     # ── 3. Signal ─────────────────────────────────────────────────────────
     # Primary: OHLCV-based EMA crossover + RSI (Coinbase → Kraken fallback)
-    # Secondary: CoinGecko 3-timeframe momentum
-    # Combined: both must agree on direction for a trade; disagreement = hold
+    # Last resort: CoinGecko 3-timeframe momentum (only if all OHLCV sources fail)
     cg_sig   = signal.compute(data.change_1h, data.change_24h, data.change_7d)
     tech     = ohlcv.fetch(cfg.asset)
     tech_sig = ohlcv.to_signal(tech) if tech is not None else None
 
-    if tech_sig is not None and tech_sig.direction != "none":
-        if tech_sig.direction == cg_sig.direction:
-            # Both agree — use the stronger (lower multiplier wins if disagreeing on strength)
-            sig = tech_sig if tech_sig.multiplier >= cg_sig.multiplier else cg_sig
-        else:
-            # Disagreement — hold, don't trade
-            sig = signal.Signal(score=0, label="hold", multiplier=0.0, direction="none")
+    if tech_sig is not None:
+        sig = tech_sig          # OHLCV available — use it exclusively
     else:
-        # Tech signal unavailable — fall back to CoinGecko only
-        sig = cg_sig
+        sig = cg_sig            # all OHLCV sources failed — fall back to CoinGecko
 
     cycle_entry: dict = {
         "type": "cycle",
