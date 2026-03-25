@@ -40,6 +40,45 @@ from bot.mcp_client import MCPClient
 log = logging.getLogger(__name__)
 
 
+# Aave v3 Base liquidation thresholds per supply asset (basis: on-chain reserve config)
+_LIQ_THRESHOLD: dict[str, float] = {
+    "WETH":   0.83,
+    "wstETH": 0.82,
+    "cbBTC":  0.78,
+    "USDC":   0.78,   # used as supply asset in short positions
+}
+
+
+def _paper_health_factor(open_trade: Optional[dict], price: float, cfg: BotConfig) -> float:
+    """
+    Compute a simulated health factor for a paper position.
+    Returns 999.0 when no position is open (no debt).
+
+    Long: supply asset units as collateral, borrow USDC
+      HF = (supply * price * liq_threshold) / borrow_usdc
+
+    Short: supply USDC as collateral, borrow asset units
+      HF = (supply_usdc * usdc_liq_threshold) / (borrow_units * price)
+    """
+    if open_trade is None:
+        return 999.0
+    direction = open_trade.get("direction", "long")
+    supply = float(open_trade.get("supply", 0))
+    borrow = float(open_trade.get("borrow", 0))
+    if direction == "short":
+        lt = _LIQ_THRESHOLD.get("USDC", 0.78)
+        debt_usd = borrow * price
+        if debt_usd <= 0:
+            return 999.0
+        return (supply * lt) / debt_usd
+    else:
+        lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
+        collateral_usd = supply * price
+        if borrow <= 0:
+            return 999.0
+        return (collateral_usd * lt) / borrow
+
+
 def _position_id_for(direction: str, cfg: BotConfig, raw_cfg: dict) -> str:
     """Return the Aave position_id string for the given direction."""
     if direction == "short":
@@ -76,6 +115,12 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
 
     # ── 2. Market data ────────────────────────────────────────────────────
     data, sources_failed = market.fetch(cfg.asset, mcp)
+
+    # In paper mode, replace on-chain HF with a simulated value derived from
+    # the paper position — real wallet HF belongs to whatever is live on-chain
+    # and should not influence paper trading decisions.
+    if cfg.paper_trading:
+        data.health_factor = _paper_health_factor(open_trade, data.price, cfg)
 
     # ── 3. Signal ─────────────────────────────────────────────────────────
     sig = signal.compute(data.change_1h, data.change_24h, data.change_7d)
