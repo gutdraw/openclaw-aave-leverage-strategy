@@ -55,3 +55,37 @@ def compute(
         borrow = supply * (lev - 1)               # USDC to borrow
 
     return PositionSize(seed_usd=seed_usd, supply=supply, borrow=borrow)
+
+
+def compute_increase(
+    total_collateral_usd: float,
+    price: float,
+    signal: Signal,
+    cfg: BotConfig,
+    current_seed_usd: float,
+) -> PositionSize:
+    """
+    Compute the additional size needed to top up a moderate position to full strength.
+    Returns zero-size if already at full size or price is invalid.
+    """
+    effective_collateral = (
+        cfg.paper_seed_usd
+        if cfg.paper_trading and cfg.paper_seed_usd > 0
+        else total_collateral_usd
+    )
+    target_seed = effective_collateral * cfg.base_position_pct * cfg.strong_signal_size
+    increase_seed = target_seed - current_seed_usd
+
+    if increase_seed <= 0 or price <= 0:
+        return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)
+
+    if signal.direction == "short":
+        lev = min(cfg.leverage, cfg.short_max_leverage)
+        supply = increase_seed
+        borrow = increase_seed * (lev - 1) / price
+    else:
+        lev = cfg.leverage
+        supply = increase_seed / price
+        borrow = supply * (lev - 1)
+
+    return PositionSize(seed_usd=increase_seed, supply=supply, borrow=borrow)

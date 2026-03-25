@@ -50,29 +50,31 @@ _LIQ_THRESHOLD: dict[str, float] = {
 }
 
 
-def _paper_health_factor(open_trade: Optional[dict], price: float, cfg: BotConfig) -> float:
+def _paper_health_factor(
+    open_trade: Optional[dict],
+    price: float,
+    cfg: BotConfig,
+    eff_supply: float = 0.0,
+    eff_borrow: float = 0.0,
+) -> float:
     """
     Compute a simulated health factor for a paper position.
     Returns 999.0 when no position is open (no debt).
 
-    sizing.py stores supply/borrow at seed level. The actual Aave flash-loan
-    position supplies leverage × seed as collateral, so we must scale by leverage.
+    Pass eff_supply/eff_borrow to account for any position increases;
+    falls back to open_trade values if not provided.
 
     Long (supply asset, borrow USDC):
-      real_collateral_usd = leverage * supply * price
-      debt_usd            = borrow * price   (borrow stored in asset units = supply*(lev-1))
       HF = (leverage * supply * lt) / borrow   (price cancels)
 
     Short (supply USDC, borrow asset):
-      real_collateral_usd = leverage * supply   (USDC is stable)
-      debt_usd            = borrow * price
       HF = (leverage * supply * lt) / (borrow * price)
     """
     if open_trade is None:
         return 999.0
     direction = open_trade.get("direction", "long")
-    supply   = float(open_trade.get("supply", 0))
-    borrow   = float(open_trade.get("borrow", 0))
+    supply   = eff_supply or float(open_trade.get("supply", 0))
+    borrow   = eff_borrow or float(open_trade.get("borrow", 0))
     leverage = float(open_trade.get("leverage", 2.0))
     if direction == "short":
         lt = _LIQ_THRESHOLD.get("USDC", 0.78)
@@ -120,6 +122,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     entries = state.load_entries(cfg.trades_file)
     open_trade: Optional[dict] = state.get_open_trade(entries)
     btc_dom_prev: Optional[float] = state.get_last_btc_dominance(entries)
+    eff_supply, eff_borrow = state.get_effective_size(open_trade, entries)
+    already_increased: bool = state.has_been_increased(open_trade, entries)
 
     # ── 2. Market data ────────────────────────────────────────────────────
     data, sources_failed = market.fetch(cfg.asset, mcp, rpc_url=cfg.rpc_url, onchain_lookback_blocks=cfg.onchain_lookback_blocks)
@@ -128,7 +132,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     # the paper position — real wallet HF belongs to whatever is live on-chain
     # and should not influence paper trading decisions.
     if cfg.paper_trading:
-        data.health_factor = _paper_health_factor(open_trade, data.price, cfg)
+        data.health_factor = _paper_health_factor(open_trade, data.price, cfg, eff_supply, eff_borrow)
 
     # ── 3. Signal ─────────────────────────────────────────────────────────
     sig = signal.compute(data.change_1h, data.change_24h, data.change_7d)
@@ -174,7 +178,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         if hf < hf_close:
             log.warning("HF %.3f < %.3f — force close", hf, hf_close)
             res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res)
+            trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res, eff_supply, eff_borrow)
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": "hf_close"})
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
@@ -217,7 +221,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                     open_direction, sig.label, sig.score,
                 )
                 res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-                trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res)
+                trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res, eff_supply, eff_borrow)
                 cycle_entry["decision"] = "signal_reversal"
                 state.append_entry(cfg.trades_file, cycle_entry)
                 state.append_entry(cfg.trades_file, trade_entry)
@@ -236,7 +240,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                         age_days, cfg.max_hold_days,
                     )
                     res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-                    trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res)
+                    trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res, eff_supply, eff_borrow)
                     cycle_entry["decision"] = "max_hold_days"
                     state.append_entry(cfg.trades_file, cycle_entry)
                     state.append_entry(cfg.trades_file, trade_entry)
@@ -247,8 +251,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     # ── 5. Exit check (TP / SL) on open position ──────────────────────────
     if open_trade is not None:
         entry_price  = float(open_trade.get("entry_price", 0))
-        supply_units = float(open_trade.get("supply", 0))
-        borrow_units = float(open_trade.get("borrow", 0))
+        supply_units = eff_supply or float(open_trade.get("supply", 0))
+        borrow_units = eff_borrow or float(open_trade.get("borrow", 0))
         trade_lev    = float(open_trade.get("leverage", cfg.leverage))
         p = pnl.compute_unrealised(
             entry_price=entry_price,
@@ -278,11 +282,48 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         if exit_reason:
             log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
             res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res)
+            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res, eff_supply, eff_borrow)
             cycle_entry["decision"] = exit_reason
             state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
+
+    # ── 5d. Increase position (moderate → strong signal upgrade) ─────────
+    if open_trade is not None and sig.direction == open_direction and not already_increased:
+        open_signal = open_trade.get("signal", "")
+        signal_upgraded = (
+            (open_direction == "long"  and sig.score == 3 and open_signal != "strong_long")
+            or
+            (open_direction == "short" and sig.score == 0 and open_signal != "strong_short")
+        )
+        if signal_upgraded:
+            current_seed = float(open_trade.get("seed_usd", 0))
+            delta = sizing.compute_increase(data.total_collateral_usd, data.price, sig, cfg, current_seed)
+            if delta.supply > 0:
+                log.info(
+                    "Signal upgraded to %s — increasing position by seed_usd=%.2f",
+                    sig.label, delta.seed_usd,
+                )
+                res = executor.increase_position(delta, open_direction, pos_id, cfg, mcp, signer)
+                increase_entry = {
+                    "type": "trade",
+                    "action": "increase",
+                    "ts": state.now_iso(),
+                    "asset": cfg.asset,
+                    "direction": open_direction,
+                    "position_id": pos_id,
+                    "signal": sig.label,
+                    "price": data.price,
+                    "add_supply": delta.supply,
+                    "add_borrow": delta.borrow,
+                    "add_seed_usd": round(delta.seed_usd, 2),
+                    "paper": cfg.paper_trading,
+                    "tx_hash": res.tx_hash,
+                }
+                cycle_entry["decision"] = f"increase_{open_direction}"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                state.append_entry(cfg.trades_file, increase_entry)
+                return cycle_entry
 
     # ── 6. No-trade filters ───────────────────────────────────────────────
     filt = filters.apply_all(data, sig.label, sig.direction, open_trade, btc_dom_prev, cfg)
@@ -346,8 +387,16 @@ def _close_trade_entry(
     cfg: BotConfig,
     reason: str,
     res,
+    eff_supply: float = 0.0,
+    eff_borrow: float = 0.0,
 ) -> dict:
-    realised = pnl.compute_realised(open_trade, close_price)
+    # Use effective totals (including increases) for accurate P&L
+    effective = dict(open_trade)
+    if eff_supply:
+        effective["supply"] = eff_supply
+    if eff_borrow:
+        effective["borrow"] = eff_borrow
+    realised = pnl.compute_realised(effective, close_price)
     return {
         "type": "trade",
         "action": "close",
@@ -357,8 +406,8 @@ def _close_trade_entry(
         "position_id": open_trade.get("position_id"),
         "close_price": close_price,
         "entry_price": open_trade.get("entry_price"),
-        "supply": open_trade.get("supply"),
-        "borrow": open_trade.get("borrow"),
+        "supply": effective.get("supply"),
+        "borrow": effective.get("borrow"),
         "leverage": open_trade.get("leverage"),
         "realised_usd": round(realised, 2),
         "reason": reason,

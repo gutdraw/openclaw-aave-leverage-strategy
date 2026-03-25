@@ -118,6 +118,54 @@ def close_position(
     return ExecResult(action="close", tx_hash=tx_hash, raw=resp)
 
 
+def increase_position(
+    size: PositionSize,
+    direction: str,
+    position_id: str,
+    cfg: BotConfig,
+    mcp: MCPClient,
+    signer=None,
+) -> ExecResult:
+    """Add to an existing leveraged position (moderate → strong signal upgrade)."""
+    if direction == "short":
+        supply_asset = "USDC"
+        borrow_asset = cfg.short_borrow_asset
+        amount = size.supply
+    else:
+        supply_asset = cfg.asset
+        borrow_asset = cfg.borrow_asset
+        amount = size.supply
+
+    if cfg.paper_trading:
+        if direction == "long":
+            log.info("[PAPER] swap USDC → %s amount=%.6f (increase)", cfg.asset, amount)
+        log.info(
+            "[PAPER] increase %s supply=+%.4f %s borrow=+%.4f %s",
+            direction, amount, supply_asset, size.borrow, borrow_asset,
+        )
+        return ExecResult(
+            action="paper", tx_hash=None,
+            raw={"paper": True, "direction": direction, "supply": amount, "borrow": size.borrow},
+        )
+
+    if direction == "long":
+        log.info("swap USDC → %s amount=%.6f (increase)", cfg.asset, amount)
+        swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
+        swap_hash = signer.sign_and_send(swap_resp["transaction"])
+        signer.wait_for_receipt(swap_hash)
+
+    resp = mcp.prepare_increase(
+        leverage=cfg.leverage,
+        amount=amount,
+        supply_asset=supply_asset,
+        borrow_asset=borrow_asset,
+    )
+    tx_hash = signer.sign_and_send(resp["transaction"])
+    signer.wait_for_receipt(tx_hash)
+    log.info("increase %s tx %s", direction, tx_hash)
+    return ExecResult(action="increase", tx_hash=tx_hash, raw=resp)
+
+
 def reduce_position(
     position_id: str,
     direction: str,

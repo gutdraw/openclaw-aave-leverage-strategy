@@ -64,6 +64,16 @@ class MCPClient:
             "target_leverage": target_leverage,
         })
 
+    def prepare_increase(self, leverage: float, amount: float,
+                         supply_asset: str, borrow_asset: str) -> dict:
+        return self.call("prepare_increase", {
+            "user_address": self.wallet_address,
+            "leverage": leverage,
+            "amount": amount,
+            "supply_asset": supply_asset,
+            "borrow_asset": borrow_asset,
+        })
+
     def swap(self, token_in: str, token_out: str, amount_in: float) -> dict:
         return self.call("swap", {
             "user_address": self.wallet_address,

@@ -43,6 +43,54 @@ def get_open_trade(entries: list[dict]) -> Optional[dict]:
     return open_trade
 
 
+def get_effective_size(open_trade: Optional[dict], entries: list[dict]) -> tuple[float, float]:
+    """
+    Return (total_supply, total_borrow) for the open position, including any increases.
+    Falls back to the original open entry values if no increases exist.
+    """
+    if open_trade is None:
+        return 0.0, 0.0
+    supply = float(open_trade.get("supply", 0))
+    borrow = float(open_trade.get("borrow", 0))
+    open_ts = open_trade.get("ts", "")
+    past_open = False
+    for e in entries:
+        if e.get("type") != "trade":
+            continue
+        if e.get("action") == "open" and e.get("ts") == open_ts:
+            past_open = True
+            continue
+        if not past_open:
+            continue
+        if e.get("action") == "close":
+            break
+        if e.get("action") == "increase":
+            supply += float(e.get("add_supply", 0))
+            borrow += float(e.get("add_borrow", 0))
+    return supply, borrow
+
+
+def has_been_increased(open_trade: Optional[dict], entries: list[dict]) -> bool:
+    """Return True if the current open position has already been increased this trade."""
+    if open_trade is None:
+        return False
+    open_ts = open_trade.get("ts", "")
+    past_open = False
+    for e in entries:
+        if e.get("type") != "trade":
+            continue
+        if e.get("action") == "open" and e.get("ts") == open_ts:
+            past_open = True
+            continue
+        if not past_open:
+            continue
+        if e.get("action") == "close":
+            return False
+        if e.get("action") == "increase":
+            return True
+    return False
+
+
 def get_last_btc_dominance(entries: list[dict]) -> Optional[float]:
     """Return BTC dominance % from the most recent cycle entry that has it."""
     for e in reversed(entries):
