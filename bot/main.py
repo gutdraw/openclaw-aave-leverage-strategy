@@ -191,11 +191,23 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         cycle_entry["unrealised_pct"] = round(p.unrealised_pct, 4)
 
         exit_reason = pnl.should_exit(p)
+        # Suppress TP (but not SL) when signal is still at maximum strength in the
+        # trade direction — trend-following: let winners ride until the signal fades.
+        if (exit_reason == "take_profit"
+                and not cfg.tp_on_strong_signal
+                and ((open_direction == "long"  and sig.score == 3)
+                     or (open_direction == "short" and sig.score == 0))):
+            log.info(
+                "TP reached (%.2f%%) but signal still strong (%s) — holding",
+                p.unrealised_pct, sig.label,
+            )
+            exit_reason = None
         if exit_reason:
             log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
             res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
             trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res)
-            state.append_entry(cfg.trades_file, cycle_entry | {"decision": exit_reason})
+            cycle_entry["decision"] = exit_reason
+            state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
 

@@ -59,6 +59,11 @@ signal_reversal_min_score: 1
 # Set to 0 to disable.
 max_hold_days: 7.0
 
+# TP suppression on strong signal: when false (default), take-profit is skipped if the
+# signal is still at maximum strength (score=3 for longs, score=0 for shorts).
+# SL always applies. Set true to restore fixed-TP behaviour.
+tp_on_strong_signal: false
+
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
 # These suppress new entries when conditions are unfavorable.

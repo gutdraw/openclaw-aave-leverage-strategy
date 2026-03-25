@@ -55,6 +55,10 @@ class BotConfig:
     signal_reversal_min_score: int = 1   # close long if score ≤ this; close short if score ≥ (3 - this)
     # Time-based exit: close after N days regardless of P&L (prevents carry drag + HF drift).
     max_hold_days: float = 7.0
+    # TP suppression on strong signal: when False (default), take-profit is skipped if the
+    # signal is still at maximum strength in the trade direction — let winners ride.
+    # SL always applies. Set True to restore fixed-TP behaviour regardless of signal.
+    tp_on_strong_signal: bool = False
 
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True
