@@ -11,6 +11,7 @@ COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_GLOBAL  = "https://api.coingecko.com/api/v3/global"
 BINANCE_PREMIUM   = "https://fapi.binance.com/fapi/v1/premiumIndex"
 BYBIT_TICKERS     = "https://api.bybit.com/v5/market/tickers"
+OKX_FUNDING       = "https://www.okx.com/api/v5/public/funding-rate"
 FEAR_GREED_URL    = "https://api.alternative.me/fng/"
 
 ASSET_TO_CG_ID: dict[str, str] = {
@@ -20,12 +21,18 @@ ASSET_TO_CG_ID: dict[str, str] = {
     "wstETH": "wrapped-steth",
 }
 
-# Map bot asset → Binance perpetual symbol for funding rate
+# Map bot asset → exchange perpetual symbols for funding rate
 ASSET_TO_BINANCE: dict[str, str] = {
     "WETH":   "ETHUSDT",
     "ETH":    "ETHUSDT",
     "wstETH": "ETHUSDT",
     "cbBTC":  "BTCUSDT",
+}
+ASSET_TO_OKX: dict[str, str] = {
+    "WETH":   "ETH-USDT-SWAP",
+    "ETH":    "ETH-USDT-SWAP",
+    "wstETH": "ETH-USDT-SWAP",
+    "cbBTC":  "BTC-USDT-SWAP",
 }
 
 
@@ -99,21 +106,34 @@ def fetch(
     except Exception as e:
         sources_failed.append(f"coingecko_global:{e}")
 
-    # ── Source 4: Funding rate — Binance (non-US) with Bybit fallback (US) ──
-    # Both are free, no auth. Binance returns 451 on US IPs; Bybit works globally.
+    # ── Source 4: Funding rate — tries Binance → Bybit → OKX in order ───────
+    # Binance/Bybit block US IPs (451/403); OKX is accessible globally.
     funding_rate = None
-    symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
+    _fr_errors: list[str] = []
     try:
+        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
         r = httpx.get(BINANCE_PREMIUM, params={"symbol": symbol}, timeout=timeout)
         r.raise_for_status()
         funding_rate = float(r.json()["lastFundingRate"]) * 100
-    except Exception as binance_err:
+    except Exception as e:
+        _fr_errors.append(f"binance:{e}")
+    if funding_rate is None:
         try:
+            symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
             r = httpx.get(BYBIT_TICKERS, params={"category": "linear", "symbol": symbol}, timeout=timeout)
             r.raise_for_status()
             funding_rate = float(r.json()["result"]["list"][0]["fundingRate"]) * 100
-        except Exception as bybit_err:
-            sources_failed.append(f"funding_rate:binance={binance_err} bybit={bybit_err}")
+        except Exception as e:
+            _fr_errors.append(f"bybit:{e}")
+    if funding_rate is None:
+        try:
+            okx_id = ASSET_TO_OKX.get(asset, "BTC-USDT-SWAP")
+            r = httpx.get(OKX_FUNDING, params={"instId": okx_id}, timeout=timeout)
+            r.raise_for_status()
+            funding_rate = float(r.json()["data"][0]["fundingRate"]) * 100
+        except Exception as e:
+            _fr_errors.append(f"okx:{e}")
+            sources_failed.append(f"funding_rate:{'; '.join(_fr_errors)}")
 
     # ── Source 5: Fear & Greed Index (soft — failure logged, not blocking) ────
     fear_greed = None
