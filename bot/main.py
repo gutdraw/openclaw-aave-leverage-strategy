@@ -54,29 +54,36 @@ def _paper_health_factor(open_trade: Optional[dict], price: float, cfg: BotConfi
     Compute a simulated health factor for a paper position.
     Returns 999.0 when no position is open (no debt).
 
-    Long: supply asset units as collateral, borrow USDC
-      HF = (supply * price * liq_threshold) / borrow_usdc
+    sizing.py stores supply/borrow at seed level. The actual Aave flash-loan
+    position supplies leverage × seed as collateral, so we must scale by leverage.
 
-    Short: supply USDC as collateral, borrow asset units
-      HF = (supply_usdc * usdc_liq_threshold) / (borrow_units * price)
+    Long (supply asset, borrow USDC):
+      real_collateral_usd = leverage * supply * price
+      debt_usd            = borrow * price   (borrow stored in asset units = supply*(lev-1))
+      HF = (leverage * supply * lt) / borrow   (price cancels)
+
+    Short (supply USDC, borrow asset):
+      real_collateral_usd = leverage * supply   (USDC is stable)
+      debt_usd            = borrow * price
+      HF = (leverage * supply * lt) / (borrow * price)
     """
     if open_trade is None:
         return 999.0
     direction = open_trade.get("direction", "long")
-    supply = float(open_trade.get("supply", 0))
-    borrow = float(open_trade.get("borrow", 0))
+    supply   = float(open_trade.get("supply", 0))
+    borrow   = float(open_trade.get("borrow", 0))
+    leverage = float(open_trade.get("leverage", 2.0))
     if direction == "short":
         lt = _LIQ_THRESHOLD.get("USDC", 0.78)
         debt_usd = borrow * price
         if debt_usd <= 0:
             return 999.0
-        return (supply * lt) / debt_usd
+        return (leverage * supply * lt) / debt_usd
     else:
         lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
-        collateral_usd = supply * price
         if borrow <= 0:
             return 999.0
-        return (collateral_usd * lt) / borrow
+        return (leverage * supply * lt) / borrow
 
 
 def _position_id_for(direction: str, cfg: BotConfig, raw_cfg: dict) -> str:
