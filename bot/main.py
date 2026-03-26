@@ -206,14 +206,58 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             state.append_entry(cfg.trades_file, cycle_entry)
             return cycle_entry
 
+    # ── 5. Exit check (TP / SL) on open position ──────────────────────────
+    # Runs before signal reversal — price-based stops are deterministic and
+    # should always take priority over signal-based exits.
+    if open_trade is not None:
+        entry_price  = float(open_trade.get("entry_price", 0))
+        supply_units = eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
+        borrow_units = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
+        trade_lev    = float(open_trade.get("leverage", cfg.leverage))
+        p = pnl.compute_unrealised(
+            entry_price=entry_price,
+            current_price=data.price,
+            supply=supply_units,
+            borrow=borrow_units,
+            leverage=trade_lev,
+            take_profit_pct=cfg.take_profit_pct,
+            stop_loss_pct=cfg.stop_loss_pct,
+            direction=open_direction,
+        )
+        cycle_entry["unrealised_usd"] = round(p.unrealised_usd, 2)
+        cycle_entry["unrealised_pct"] = round(p.unrealised_pct, 4)
+
+        exit_reason = pnl.should_exit(p)
+        # Suppress TP (but not SL) when signal is still at maximum strength in the
+        # trade direction — trend-following: let winners ride until the signal fades.
+        if (exit_reason == "take_profit"
+                and not cfg.tp_on_strong_signal
+                and ((open_direction == "long"  and sig.score == 3)
+                     or (open_direction == "short" and sig.score == 0))):
+            log.info(
+                "TP reached (%.2f%%) but signal still strong (%s) — holding",
+                p.unrealised_pct, sig.label,
+            )
+            exit_reason = None
+        if exit_reason:
+            log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
+            res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
+            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res, eff_supply, eff_borrow)
+            cycle_entry["decision"] = exit_reason
+            state.append_entry(cfg.trades_file, cycle_entry)
+            state.append_entry(cfg.trades_file, trade_entry)
+            return cycle_entry
+
     # ── 5a. Signal reversal exit ──────────────────────────────────────
+    # Requires an actively opposing signal direction — "hold" (score=0, direction="none")
+    # does not count as a reversal even though it shares score=0 with strong_short.
     if open_trade is not None and cfg.signal_reversal_exit:
         is_long_pos  = open_direction == "long"
         is_short_pos = open_direction == "short"
         reversal = (
-            (is_long_pos  and sig.score <= cfg.signal_reversal_min_score)
+            (is_long_pos  and sig.direction == "short" and sig.score <= cfg.signal_reversal_min_score)
             or
-            (is_short_pos and sig.score >= (3 - cfg.signal_reversal_min_score))
+            (is_short_pos and sig.direction == "long"  and sig.score >= (3 - cfg.signal_reversal_min_score))
         )
         if reversal:
             hold_ok = True
@@ -262,46 +306,6 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                     return cycle_entry
             except (ValueError, TypeError):
                 pass  # malformed ts — skip time exit this cycle
-
-    # ── 5. Exit check (TP / SL) on open position ──────────────────────────
-    if open_trade is not None:
-        entry_price  = float(open_trade.get("entry_price", 0))
-        supply_units = eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
-        borrow_units = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
-        trade_lev    = float(open_trade.get("leverage", cfg.leverage))
-        p = pnl.compute_unrealised(
-            entry_price=entry_price,
-            current_price=data.price,
-            supply=supply_units,
-            borrow=borrow_units,
-            leverage=trade_lev,
-            take_profit_pct=cfg.take_profit_pct,
-            stop_loss_pct=cfg.stop_loss_pct,
-            direction=open_direction,
-        )
-        cycle_entry["unrealised_usd"] = round(p.unrealised_usd, 2)
-        cycle_entry["unrealised_pct"] = round(p.unrealised_pct, 4)
-
-        exit_reason = pnl.should_exit(p)
-        # Suppress TP (but not SL) when signal is still at maximum strength in the
-        # trade direction — trend-following: let winners ride until the signal fades.
-        if (exit_reason == "take_profit"
-                and not cfg.tp_on_strong_signal
-                and ((open_direction == "long"  and sig.score == 3)
-                     or (open_direction == "short" and sig.score == 0))):
-            log.info(
-                "TP reached (%.2f%%) but signal still strong (%s) — holding",
-                p.unrealised_pct, sig.label,
-            )
-            exit_reason = None
-        if exit_reason:
-            log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
-            res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res, eff_supply, eff_borrow)
-            cycle_entry["decision"] = exit_reason
-            state.append_entry(cfg.trades_file, cycle_entry)
-            state.append_entry(cfg.trades_file, trade_entry)
-            return cycle_entry
 
     # ── 5d. Increase position (moderate → strong signal upgrade) ─────────
     if open_trade is not None and sig.direction == open_direction and not already_increased:
