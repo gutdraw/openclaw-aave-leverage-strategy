@@ -23,6 +23,7 @@ def apply_all(
     open_trade: Optional[dict],
     btc_dominance_prev: Optional[float],
     cfg: BotConfig,
+    ohlcv_rsi: Optional[float] = None,
 ) -> FilterResult:
     """
     Run all filters in priority order.
@@ -94,6 +95,9 @@ def apply_all(
             )
 
     # ── Filter 5: Fear & Greed (sentiment extremes) ───────────────────────
+    # Short block: only suppress when F&G is extreme fear AND RSI hasn't recovered.
+    # Once RSI climbs above fear_greed_short_rsi_floor (default 35), the oversold
+    # condition is gone and F&G alone is insufficient reason to avoid a short.
     if open_trade is None and data.fear_greed is not None:
         if is_long and data.fear_greed >= cfg.max_fear_greed_long:
             return FilterResult(
@@ -102,11 +106,15 @@ def apply_all(
                 decision="skip_fear_greed",
             )
         if is_short and data.fear_greed <= cfg.min_fear_greed_short:
-            return FilterResult(
-                blocked=True,
-                triggered=["fear_greed"],
-                decision="skip_fear_greed",
+            rsi_still_oversold = (
+                ohlcv_rsi is None or ohlcv_rsi < cfg.fear_greed_short_rsi_floor
             )
+            if rsi_still_oversold:
+                return FilterResult(
+                    blocked=True,
+                    triggered=["fear_greed"],
+                    decision="skip_fear_greed",
+                )
 
     # ── Filter 6: Volume (low-conviction moves) ───────────────────────────
     if open_trade is None and cfg.min_volume_24h_usd > 0 and data.volume_24h is not None:

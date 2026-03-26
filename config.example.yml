@@ -82,7 +82,8 @@ max_funding_rate_short: 0.05  # skip shorts if funding < -0.05% per 8h
 # Fear & Greed Index (alternative.me): 0=extreme fear, 100=extreme greed.
 # Extreme greed historically precedes reversals; extreme fear = capitulation.
 max_fear_greed_long: 85       # skip longs if F&G >= 85
-min_fear_greed_short: 15      # skip shorts if F&G <= 15
+min_fear_greed_short: 15      # skip shorts if F&G <= 15 AND RSI < fear_greed_short_rsi_floor
+fear_greed_short_rsi_floor: 35.0  # F&G short block lifted once RSI recovers above this (oversold gone)
 
 # Volume filter: skip new entries if 24h spot volume (USD) is below threshold.
 # Low volume = weak conviction. Set to 0 to disable (default).

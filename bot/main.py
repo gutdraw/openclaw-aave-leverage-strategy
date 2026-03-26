@@ -345,7 +345,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                 return cycle_entry
 
     # ── 6. No-trade filters ───────────────────────────────────────────────
-    filt = filters.apply_all(data, sig.label, sig.direction, open_trade, btc_dom_prev, cfg)
+    filt = filters.apply_all(data, sig.label, sig.direction, open_trade, btc_dom_prev, cfg,
+                             ohlcv_rsi=tech.rsi if tech is not None else None)
     if filt.blocked:
         log.info("Filtered: %s", filt.decision)
         cycle_entry["decision"] = filt.decision
