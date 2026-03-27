@@ -68,8 +68,9 @@ def _paper_health_factor(
     Long (supply asset, borrow USDC):
       HF = (leverage * supply * lt) / borrow   (price cancels)
 
-    Short (supply USDC, borrow asset):
-      HF = (leverage * supply * lt) / (borrow * price)
+    Short (supply USDC seed, borrow lev×seed asset):
+      True Aave supply = (leverage+1)×seed USDC (flash loan loop).
+      HF = ((leverage+1) * supply * lt) / (borrow * price)
     """
     if open_trade is None:
         return 999.0
@@ -82,7 +83,7 @@ def _paper_health_factor(
         debt_usd = borrow * price
         if debt_usd <= 0:
             return 999.0
-        return (leverage * supply * lt) / debt_usd
+        return ((leverage + 1) * supply * lt) / debt_usd
     else:
         lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
         if borrow <= 0:
@@ -169,11 +170,14 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         "recent_liquidations": data.recent_liquidations,
         "usdc_supply_apy": data.usdc_supply_apy,
         "asset_borrow_apy": data.asset_borrow_apy,
-        # Leverage-weighted carry: supply leverage×seed USDC, borrow (leverage−1)×seed asset.
-        # carry = usdc_supply_apy × lev − asset_borrow_apy × (lev − 1)
+        # Flash-loan loop creates supply=(lev+1)×seed USDC, borrow=lev×seed asset.
+        # carry = usdc_supply_apy × (lev+1) − asset_borrow_apy × lev
         "short_carry_apr": (
-            round(data.usdc_supply_apy * cfg.leverage
-                  - data.asset_borrow_apy * (cfg.leverage - 1), 4)
+            round(
+                data.usdc_supply_apy * (min(cfg.leverage, cfg.short_max_leverage) + 1)
+                - data.asset_borrow_apy * min(cfg.leverage, cfg.short_max_leverage),
+                4,
+            )
             if data.usdc_supply_apy is not None and data.asset_borrow_apy is not None
             else None
         ),

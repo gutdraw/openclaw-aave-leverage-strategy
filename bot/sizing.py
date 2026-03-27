@@ -4,12 +4,12 @@ Position size calculator.
 Long:
   seed_usd = total_collateral_usd * base_position_pct * signal_multiplier
   supply   = seed_usd / price          (asset units, e.g. ETH)
-  borrow   = supply * (leverage - 1)   (USDC)
+  borrow   = supply * (leverage - 1)   (asset-denominated USDC debt)
 
-Short:
+Short (MCP flash-loan loop creates supply=(lev+1)×seed USDC, borrow=lev×seed asset):
   seed_usd = same formula
-  supply   = seed_usd                  (USDC units — stable collateral)
-  borrow   = seed_usd * (leverage-1) / price  (asset units to short, e.g. WETH)
+  supply   = seed_usd                  (USDC seed passed to MCP; loop creates (lev+1)×seed on-chain)
+  borrow   = seed_usd * leverage / price  (lev×seed in asset units — true Aave debt after loop)
 """
 from dataclasses import dataclass
 
@@ -47,8 +47,8 @@ def compute(
 
     if signal.direction == "short":
         lev = min(cfg.leverage, cfg.short_max_leverage)  # hard cap: 2x for shorts
-        supply = seed_usd                          # USDC collateral (stable, 1:1 USD)
-        borrow = seed_usd * (lev - 1) / price     # asset units to borrow/short
+        supply = seed_usd                          # USDC seed passed to MCP
+        borrow = seed_usd * lev / price            # lev×seed in asset units (true Aave debt)
     else:
         lev = cfg.leverage
         supply = seed_usd / price                  # asset units (e.g. ETH)
@@ -82,7 +82,7 @@ def compute_increase(
     if signal.direction == "short":
         lev = min(cfg.leverage, cfg.short_max_leverage)
         supply = increase_seed
-        borrow = increase_seed * (lev - 1) / price
+        borrow = increase_seed * lev / price
     else:
         lev = cfg.leverage
         supply = increase_seed / price

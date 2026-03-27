@@ -9,11 +9,11 @@ Long P&L:
   Profit when price rises.
 
 Short P&L:
-  unrealised_pct = (entry - current) / entry * 100
+  unrealised_pct = (entry - current) / entry * 100   (raw price %; used for TP/SL)
   unrealised_usd = borrow * (entry - current)
   Profit when price falls.
-  (borrow = asset units shorted; no extra leverage multiplier needed
-   because the leverage is already embedded in borrow = seed*(lev-1)/entry_price)
+  (borrow = lev×seed/entry_price asset units — true Aave debt after flash-loan loop;
+   leverage amplification is embedded in borrow, so no separate multiplier needed)
 """
 from __future__ import annotations
 
@@ -45,8 +45,8 @@ def compute_unrealised(
     """
     Calculate unrealised P&L for an open leveraged position.
 
-    supply — long: asset units; short: USDC units (not used in short P&L)
-    borrow — long: USDC amount (not used in long P&L); short: asset units shorted
+    supply — long: asset units (1×seed); short: USDC seed (not used in short P&L)
+    borrow — long: asset-denominated debt (not used in long P&L); short: lev×seed/price asset units
     """
     if entry_price <= 0:
         return PnL(
