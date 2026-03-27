@@ -53,6 +53,9 @@ class MarketData:
     usdc_utilization: Optional[float] = None  # Aave v3 Base USDC pool utilization 0–1
     asset_utilization: Optional[float] = None # Aave v3 Base supply-asset utilization 0–1
     recent_liquidations: Optional[int] = None # LiquidationCall events in last ~5 min
+    usdc_supply_apy: Optional[float] = None   # Aave USDC supply APY % (earned on short collateral)
+    asset_borrow_apy: Optional[float] = None  # Aave asset borrow APY % (paid when short)
+    short_carry_apr: Optional[float] = None   # net carry for short = usdc_supply_apy - asset_borrow_apy
 
 
 def fetch(
@@ -96,11 +99,23 @@ def fetch(
     borrow_apr = health_factor = total_collateral_usd = None
     try:
         pos                  = mcp_client.get_position()
-        borrow_apr           = pos["reserveRates"]["USDC"]["borrowApy"] * 100
+        rates                = pos.get("reserveRates", {})
+        borrow_apr           = rates["USDC"]["borrowApy"] * 100
         health_factor        = float(pos["aave"]["healthFactor"])
         total_collateral_usd = float(pos["aave"]["totalCollateralUSD"])
     except Exception as e:
         sources_failed.append(f"get_position:{e}")
+
+    # Extract short carry rates from position data (both optional — keys may not exist)
+    usdc_supply_apy = asset_borrow_apy = short_carry_apr = None
+    if pos is not None:
+        try:
+            rates = pos.get("reserveRates", {})
+            usdc_supply_apy  = round(rates["USDC"]["supplyApy"] * 100, 4)
+            asset_borrow_apy = round(rates[asset]["borrowApy"] * 100, 4)
+            short_carry_apr  = round(usdc_supply_apy - asset_borrow_apy, 4)
+        except (KeyError, TypeError):
+            pass
 
     # ── Source 3: CoinGecko global (BTC dominance) ────────────────────────
     btc_dominance = None
@@ -185,4 +200,7 @@ def fetch(
         usdc_utilization=oc.usdc_utilization,
         asset_utilization=oc.asset_utilization,
         recent_liquidations=oc.recent_liquidations,
+        usdc_supply_apy=usdc_supply_apy,
+        asset_borrow_apy=asset_borrow_apy,
+        short_carry_apr=short_carry_apr,
     ), sources_failed
