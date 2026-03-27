@@ -1,7 +1,7 @@
 ---
 name: aave-leverage-strategy
 description: Autonomous trend-following strategy for Aave v3 leverage on Base. Runs on a cron schedule, researches market conditions, sizes positions by signal confidence, and tracks P&L in a persistent log. Paper trading by default.
-version: 1.1.1
+version: 1.1.2
 author: gutdraw
 tags: [defi, aave, leverage, base, crypto, trading, autonomous, strategy, paper-trading]
 requires_skill: aave-leverage
@@ -36,7 +36,12 @@ but no on-chain transactions are submitted until you explicitly go live.
 | cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) | **2x hard cap** (HF ~1.17 at open) |
 | wstETH | Supply wstETH, borrow WETH | — (not supported) | 4.3x (config cap: 3x) | — |
 
-**Why 2x is the short cap:** USDC liquidation threshold on Aave v3 Base is 78%. At 2x short (supply=3×seed USDC, borrow=2×seed BTC/ETH), opening HF = 3×0.78/2 = **1.17**. At 3x short, HF = 4×0.78/3 = **1.04** — one small adverse move causes liquidation. The bot enforces this cap in `sizing.py` regardless of `leverage` config.
+**Why 2x is the short cap:** The MCP flash-loan loop creates `supply=(lev+1)×seed` USDC
+and `borrow=lev×seed` asset on-chain. USDC liquidation threshold on Aave v3 Base is 78%.
+At 2x short: supply=3×seed USDC, borrow=2×seed cbBTC/WETH → HF = 3×0.78/2 = **1.17**.
+At 3x short: supply=4×seed USDC, borrow=3×seed → HF = 4×0.78/3 = **1.04** — one small
+adverse move causes liquidation. The bot enforces this cap in `sizing.py` regardless of
+`leverage` config.
 
 The bot trades both longs and shorts automatically based on the OHLCV signal:
 - EMA bull + RSI bullish zone → long (strong or moderate depending on RSI strength)
@@ -166,7 +171,8 @@ The file is gitignored — it contains your wallet address.
 | `max_funding_rate_long` | float | `0.05` | Skip longs if Binance perp funding > this % per 8h (crowded longs). |
 | `max_funding_rate_short` | float | `0.05` | Skip shorts if Binance perp funding < -this % per 8h (crowded shorts). |
 | `max_fear_greed_long` | int | `85` | Skip longs if Fear & Greed ≥ this (extreme greed — market over-extended). |
-| `min_fear_greed_short` | int | `15` | Skip shorts if Fear & Greed ≤ this (extreme fear / capitulation). |
+| `min_fear_greed_short` | int | `15` | Skip shorts if Fear & Greed ≤ this AND RSI < `fear_greed_short_rsi_floor` (extreme fear / capitulation). |
+| `fear_greed_short_rsi_floor` | float | `35.0` | RSI threshold that lifts the F&G short block. When RSI climbs above this, the oversold condition is gone and F&G alone won't suppress shorts. |
 | `min_volume_24h_usd` | float | `0` | Skip new entries if 24h spot volume < this USD. 0 = disabled. |
 | `rpc_url` | string | `"https://mainnet.base.org"` | Base RPC for on-chain reads. Use Alchemy for `eth_getLogs` with longer lookback. |
 | `onchain_lookback_blocks` | int | `10` | Block lookback for liquidation event scan. Alchemy free tier: max 10 (~20s on Base). |
@@ -368,9 +374,13 @@ Example: EMA(12) > EMA(26), RSI = 58 (bullish zone) → score 4 → `strong_long
 
 **Filter 5 — Fear & Greed sentiment** (direction-aware, suppresses new entries only)
 - Long trigger: `fear_greed >= max_fear_greed_long` (extreme greed — market over-extended)
-- Short trigger: `fear_greed <= min_fear_greed_short` (extreme fear / capitulation)
+- Short trigger: `fear_greed <= min_fear_greed_short` AND `RSI < fear_greed_short_rsi_floor`
+  — extreme fear alone does not block shorts in sustained downtrends. The block lifts once
+  RSI recovers above `fear_greed_short_rsi_floor` (default 35), indicating the oversold
+  bounce is done and the downtrend may continue.
 - Skipped if F&G unavailable (soft source)
-- Why: extreme sentiment often precedes reversals
+- Why: extreme fear can signal capitulation (avoid new shorts) but should not block shorts
+  indefinitely in genuine downtrends once RSI stops being oversold
 
 **Filter 6 — Volume floor** (suppresses new entries only)
 - Trigger: `volume_24h < min_volume_24h_usd` (disabled by default: 0)
@@ -407,19 +417,31 @@ Where:
 - `signal_multiplier` — `strong_signal_size` (default 1.0) for `strong_long`,
   `moderate_signal_size` (default 0.5) for `moderate_long`
 
+**What the MCP flash-loan loop creates on-chain:**
+
+| Direction | Supply (Aave) | Borrow (Aave) |
+|-----------|--------------|---------------|
+| Long (lev=3) | `lev × seed / price` asset units | `(lev-1) × seed` USDC |
+| Short (lev=2) | `(lev+1) × seed` USDC | `lev × seed / price` asset units |
+
+At 2x short with $1,000 seed: supply = $3,000 USDC, borrow = 2×$1,000/price cbBTC.
+Opening HF = (3×seed×0.78) / (2×seed) = **1.17**.
+
+**Short carry APR** (logged each cycle as `short_carry_apr`):
+```
+carry = usdc_supply_apy × (lev+1)  −  asset_borrow_apy × lev
+```
+At 2x (lev=2) with typical rates: `2.45%×3 − 0.82%×2 = 5.71%` annualised on seed.
+The earning side is amplified by `(lev+1)` because the full leveraged USDC stack earns
+the supply APY; the borrow side is `lev×seed` paying the asset borrow APY.
+
 **Pre-open health factor check:**
 
-Before opening, estimate the projected health factor:
+For shorts, estimated opening HF = `(lev+1) × lt / lev` where `lt` = USDC liquidation
+threshold (0.78). For lev=2: `3×0.78/2 = 1.17`. If projected HF < `short_min_open_hf`
+(default 1.12), skip the open and log `"decision": "skip_min_hf"`.
 
-```
-projected_hf ≈ (seed_usd * max_leverage) / (seed_usd * (max_leverage - 1)) * ltv_factor
-```
-
-If projected HF < `min_open_hf` (default 1.30), skip the open and log
-`"decision": "skip_hf_too_low"`.
-
-In practice, calling `prepare_open` will return the exact projected HF in its response —
-use that value to confirm before proceeding to execution steps.
+For longs, HF is checked against `min_open_hf` (default 1.30).
 
 ---
 
@@ -511,9 +533,16 @@ HF defense always runs before exit condition checks. If HF is fine, check TP/SL/
 
 **Signal reversal details:**
 - Only triggers if `signal_reversal_exit: true` (default)
-- `signal_reversal_min_score: 0` — only a strong reversal (all 3 timeframes) triggers close. Set to 1 for moderate or strong, 2 for any opposing signal.
-- `min_hold_hours` — prevents the reversal exit from firing within N hours of open. Protects against 30-minute whipsaw on noisy mid-timeframe data. Default: 2h.
-- A "strong" signal reversal means score ≥ `signal_reversal_min_score` in the opposite direction. With score=0, only a score of 3 against the position triggers.
+- `signal_reversal_min_score: 1` (default) — triggers on moderate or strong reversal.
+  Set to 0 for strong-only, 2 for any opposing signal.
+- `min_hold_hours` — prevents the reversal exit from firing within N hours of open.
+  Protects against 30-minute whipsaw on noisy mid-timeframe data. Default: 2h.
+- **`hold` does not trigger reversal.** `hold` has score=0 and direction=`none`.
+  A long position only closes on a confirmed `short` direction signal (direction=="short"
+  AND score ≤ `signal_reversal_min_score`). A short position only closes on a confirmed
+  `long` direction signal. Uncertainty (hold) keeps the position open.
+- TP/SL (price-based stops) always run **before** signal reversal. If price hits the SL
+  level in the same cycle a reversal fires, SL takes priority.
 
 **TP suppression on strong signal:**
 - When `tp_on_strong_signal: false` (default): if the signal is still at maximum strength (all 3 timeframes aligned), take-profit is skipped. The position stays open to let winners ride.
@@ -571,7 +600,12 @@ Each line is a self-contained JSON object. Two entry types:
   "usdc_utilization": 0.718,
   "asset_utilization": 0.065,
   "recent_liquidations": 0,
+  "usdc_supply_apy": 2.45,
+  "asset_borrow_apy": 0.82,
+  "short_carry_apr": 5.71,
   "health_factor": 999.0,
+  "unrealised_usd": 86.19,
+  "unrealised_pct": 4.31,
   "sources_failed": [],
   "paper_trading": true,
   "decision": "open_long"
@@ -581,7 +615,13 @@ Each line is a self-contained JSON object. Two entry types:
 `tech_signal`, `tech_ema_bull`, `tech_rsi`, `tech_source` are `null` when both Coinbase
 and Kraken OHLCV sources fail (CoinGecko fallback was used). Soft-source fields
 (`funding_rate`, `fear_greed`, `usdc_utilization`, `asset_utilization`,
-`recent_liquidations`) are `null` when unavailable.
+`recent_liquidations`, `usdc_supply_apy`, `asset_borrow_apy`, `short_carry_apr`) are
+`null` when unavailable. `unrealised_usd` and `unrealised_pct` are `null` when no
+position is open.
+
+**`short_carry_apr`** — annualised net carry on seed for a short position:
+`usdc_supply_apy × (lev+1) − asset_borrow_apy × lev`. Null for long positions or when
+either rate is unavailable. Informational only — not used for entry/exit decisions.
 
 ### Trade entry — open
 

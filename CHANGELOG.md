@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.1.2] — 2026-03-27
+
+### Fixed
+- **Short position sizing** (`sizing.py`): `borrow` was calculated as `(lev-1)×seed/price`
+  (1× seed at 2x leverage), giving only 1× price exposure in paper P&L. The MCP
+  flash-loan loop actually creates `supply=(lev+1)×seed` USDC and `borrow=lev×seed`
+  asset on-chain. Fixed to `borrow = seed × lev / price` — 2× seed at 2x leverage.
+- **Paper health factor** (`main.py`): `_paper_health_factor` used `leverage×supply×lt`
+  for shorts, under-stating the true Aave collateral (which is `(lev+1)×seed`). Fixed
+  to `(leverage+1)×supply×lt` — now returns HF ≈ 1.17 at 2x short open (matches Aave).
+- **Short carry APR** (`main.py`): carry formula `supply_apy×lev − borrow_apy×(lev−1)`
+  was wrong for the same reason. Fixed to `supply_apy×(lev+1) − borrow_apy×lev`.
+  At 2x with current rates: 5.71% (was 4.08%).
+- **Signal reversal fires on `hold`** (`main.py`): `hold` has score=0, same as
+  `strong_short`. The condition `sig.score <= signal_reversal_min_score` (default 1)
+  was triggering reversal exits on `hold` signals. Fixed by adding `sig.direction ==
+  "short"` check — `hold` (direction=none) no longer triggers reversal.
+- **Exit ordering** (`main.py`): TP/SL (price-based, deterministic) now runs before
+  signal reversal (signal-based). Previously a signal reversal could preempt an SL
+  that should have fired at the same price.
+- **F&G short filter too aggressive** (`filters.py`, `config.py`): Filter 5 blocked
+  shorts whenever F&G ≤ 15 (extreme fear), even in sustained downtrends where RSI had
+  recovered from oversold. Added `fear_greed_short_rsi_floor` gate: the block lifts once
+  RSI climbs above this value (default 35), indicating the oversold bounce is done.
+- **Short carry APY fields** (`market.py`): Added `usdc_supply_apy` and
+  `asset_borrow_apy` to `MarketData` and cycle log — raw rates from `get_position`
+  reserveRates response.
+- **pnl.py docstring**: Updated to reflect correct borrow definition (`lev×seed/price`).
+- **config.example.yml**: `signal_reversal_min_score` default corrected to `1`
+  (moderate+strong reversal); added `fear_greed_short_rsi_floor: 35.0`.
+
 ## [1.1.1] — 2026-03-25
 
 ### Fixed
