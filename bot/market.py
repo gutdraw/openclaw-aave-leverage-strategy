@@ -55,7 +55,6 @@ class MarketData:
     recent_liquidations: Optional[int] = None # LiquidationCall events in last ~5 min
     usdc_supply_apy: Optional[float] = None   # Aave USDC supply APY % (earned on short collateral)
     asset_borrow_apy: Optional[float] = None  # Aave asset borrow APY % (paid when short)
-    short_carry_apr: Optional[float] = None   # net carry for short = usdc_supply_apy - asset_borrow_apy
 
 
 def fetch(
@@ -107,13 +106,12 @@ def fetch(
         sources_failed.append(f"get_position:{e}")
 
     # Extract short carry rates from position data (both optional — keys may not exist)
-    usdc_supply_apy = asset_borrow_apy = short_carry_apr = None
+    usdc_supply_apy = asset_borrow_apy = None
     if pos is not None:
         try:
             rates = pos.get("reserveRates", {})
             usdc_supply_apy  = round(rates["USDC"]["supplyApy"] * 100, 4)
             asset_borrow_apy = round(rates[asset]["borrowApy"] * 100, 4)
-            short_carry_apr  = round(usdc_supply_apy - asset_borrow_apy, 4)
         except (KeyError, TypeError):
             pass
 
@@ -202,5 +200,4 @@ def fetch(
         recent_liquidations=oc.recent_liquidations,
         usdc_supply_apy=usdc_supply_apy,
         asset_borrow_apy=asset_borrow_apy,
-        short_carry_apr=short_carry_apr,
     ), sources_failed

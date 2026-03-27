@@ -169,7 +169,14 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         "recent_liquidations": data.recent_liquidations,
         "usdc_supply_apy": data.usdc_supply_apy,
         "asset_borrow_apy": data.asset_borrow_apy,
-        "short_carry_apr": data.short_carry_apr,
+        # Leverage-weighted carry: supply leverage×seed USDC, borrow (leverage−1)×seed asset.
+        # carry = usdc_supply_apy × lev − asset_borrow_apy × (lev − 1)
+        "short_carry_apr": (
+            round(data.usdc_supply_apy * cfg.leverage
+                  - data.asset_borrow_apy * (cfg.leverage - 1), 4)
+            if data.usdc_supply_apy is not None and data.asset_borrow_apy is not None
+            else None
+        ),
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
         "cg_signal": cg_sig.label,
