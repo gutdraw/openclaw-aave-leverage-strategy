@@ -26,8 +26,9 @@ user_address: "0xYOUR_BOT_WALLET_ADDRESS"
 # Get your session token by calling POST /mcp/auth (see SETUP.md)
 # ---------------------------------------------------------------
 mcp_url: "https://aave-leverage-agent-production.up.railway.app"
-mcp_session_token: ""     # paste token here — refresh weekly
-private_key: ""           # live mode only — prefer env var PRIVATE_KEY, never commit
+mcp_session_token: ""          # paste initial token here (scripts/buy_session.py)
+mcp_session_duration: "month"  # auto-renewal duration: hour | day | week | month
+private_key: ""                # live mode only — prefer env var PRIVATE_KEY, never commit
 
 # ---------------------------------------------------------------
 # POSITION SIZING

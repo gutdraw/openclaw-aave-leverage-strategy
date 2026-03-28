@@ -119,6 +119,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         wallet_address=cfg.user_address,
         private_key=cfg.private_key or os.environ.get("PRIVATE_KEY", ""),
         config_path=cfg._config_path,
+        session_duration=cfg.mcp_session_duration,
     )
     signer = _build_signer(cfg)
 

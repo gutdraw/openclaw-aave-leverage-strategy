@@ -29,7 +29,7 @@ _BASE_CHAIN  = 8453
 _USDC_BASE   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 _USDC_NAME   = "USD Coin"
 _USDC_VER    = "2"
-_DEFAULT_DURATION = "month"
+_VALID_DURATIONS = {"hour", "day", "week", "month"}
 
 
 class SessionExpiredError(RuntimeError):
@@ -43,6 +43,7 @@ class MCPClient:
     wallet_address: str
     private_key: str = ""             # required for auto-renewal; empty = no renewal
     config_path: Optional[str] = None # if set, persists renewed token back to config file
+    session_duration: str = "month"   # hour | day | week | month
 
     def call(self, tool: str, args: dict) -> dict:
         """Call a single MCP tool. Auto-renews session on 401/402 if private_key set."""
@@ -94,12 +95,13 @@ class MCPClient:
         from eth_account import Account
         from eth_account.messages import encode_typed_data
 
-        log.info("Purchasing new MCP session (duration=%s)…", _DEFAULT_DURATION)
+        duration = self.session_duration if self.session_duration in _VALID_DURATIONS else "month"
+        log.info("Purchasing new MCP session (duration=%s)…", duration)
 
         # ── Step 1: request the 402 challenge ────────────────────────────────
         r = httpx.post(
             f"{self.base_url}/mcp/auth",
-            params={"duration": _DEFAULT_DURATION},
+            params={"duration": duration},
             json={"wallet_address": self.wallet_address},
             timeout=15,
         )
@@ -179,7 +181,7 @@ class MCPClient:
 
         r2 = httpx.post(
             f"{self.base_url}/mcp/auth",
-            params={"duration": _DEFAULT_DURATION},
+            params={"duration": duration},
             json={"wallet_address": self.wallet_address},
             headers={"X-PAYMENT": payment_header},
             timeout=30,

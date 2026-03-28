@@ -16,6 +16,7 @@ class BotConfig:
     user_address: str = PLACEHOLDER_ADDR
     mcp_url: str = "https://aave-leverage-agent-production.up.railway.app"
     mcp_session_token: str = ""
+    mcp_session_duration: str = "month"  # auto-renewal duration: hour | day | week | month
     private_key: str = ""        # required for live mode only — set via env var
 
     # ── Strategy ──────────────────────────────────────────────────────────
