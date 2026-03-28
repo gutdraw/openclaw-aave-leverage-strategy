@@ -1,7 +1,19 @@
 # aave-leverage-strategy — OpenClaw Skill
 
 > Autonomous trend-following strategy for Aave v3 leverage on Base.
-> Paper trading by default. Persistent P&L log. No ML, no black boxes.
+> Paper trading by default. Persistent P&L log.
+
+Two-layer design:
+- **Layer 1 — Bot**: deterministic Python loop (no AI). Runs every 30 minutes, scores
+  EMA+RSI signals, executes trades via the `aave-leverage` MCP tool, appends structured
+  JSON to `trades.jsonl`. Cost: $4/month flat MCP session via x402 — cheaper than a
+  single LLM inference call at most model tiers.
+- **Layer 2 — Agent**: any LLM (Claude, GPT, Hermes) reads `trades.jsonl` periodically,
+  diagnoses anomalies, tunes parameters, and proposes improvements. The agent never
+  touches the execution layer — reads logs, suggests code/config changes, human approves.
+
+This split keeps execution reliable (no LLM latency on the hot path) and lets you run
+any model as the reviewer without per-cycle inference cost dragging on P&L.
 
 ---
 
