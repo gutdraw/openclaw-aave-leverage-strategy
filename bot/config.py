@@ -2,6 +2,7 @@
 Config loader for the Aave leverage strategy bot.
 Reads config.yml and validates required fields.
 """
+import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 import yaml
@@ -91,12 +92,16 @@ class BotConfig:
     paper_seed_usd: float = 0.0   # if > 0, use this as collateral in paper mode (no real funds needed)
     trades_file: str = "trades.jsonl"
 
+    # Internal — set by load(), not from config file
+    _config_path: str = ""
+
     @classmethod
     def load(cls, path: str = "config.yml") -> "BotConfig":
         raw = yaml.safe_load(Path(path).read_text())
-        valid_keys = {f.name for f in fields(cls)}
+        valid_keys = {f.name for f in fields(cls) if not f.name.startswith("_")}
         filtered = {k: v for k, v in raw.items() if k in valid_keys}
         cfg = cls(**filtered)
+        cfg._config_path = str(Path(path).resolve())
 
         if cfg.user_address == PLACEHOLDER_ADDR:
             raise ValueError(
@@ -106,9 +111,10 @@ class BotConfig:
         if not cfg.mcp_session_token:
             raise ValueError(
                 "mcp_session_token is empty. "
-                "Buy a session via POST /mcp/auth and paste the token into config.yml."
+                "Run scripts/buy_session.py to purchase one, or set PRIVATE_KEY "
+                "and the client will auto-purchase on first call."
             )
-        if not cfg.paper_trading and not cfg.private_key:
+        if not cfg.paper_trading and not cfg.private_key and not os.environ.get("PRIVATE_KEY"):
             raise ValueError(
                 "private_key is required for live mode. "
                 "Set PRIVATE_KEY env var or add it to config.yml (never commit it)."

@@ -117,6 +117,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         base_url=cfg.mcp_url,
         session_token=cfg.mcp_session_token,
         wallet_address=cfg.user_address,
+        private_key=cfg.private_key or os.environ.get("PRIVATE_KEY", ""),
+        config_path=cfg._config_path,
     )
     signer = _build_signer(cfg)
 
