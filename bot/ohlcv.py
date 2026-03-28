@@ -100,14 +100,17 @@ def fetch(asset: str, timeout: int = 15) -> Optional[TechSignal]:
     oversold   = rsi_val < RSI_BEAR_LOW    # RSI < 25 — not a sell signal
 
     # Score: 0 (strong_short) → 4 (strong_long)
+    # Note: strong_short is checked before moderate_short to avoid shadowing.
+    # RSI 25-40 satisfies both (rsi_bear=True AND not rsi_bull=True); checking
+    # strong_short first ensures RSI 25-40 → strong_short, RSI 40-60 → moderate_short.
     if ema_bull and rsi_bull:
-        score = 4
+        score = 4                                          # EMA↑ + RSI 40–75
     elif ema_bull and not rsi_bear and not overbought:
-        score = 3
-    elif not ema_bull and rsi_bear and not oversold:
-        score = 1
+        score = 3                                          # EMA↑ + RSI < 25 (oversold bounce)
     elif not ema_bull and not rsi_bull and not oversold:
-        score = 0
+        score = 0                                          # EMA↓ + RSI 25–40 (bearish) or RSI > 75
+    elif not ema_bull and rsi_bear and not oversold:
+        score = 1                                          # EMA↓ + RSI 40–60 (mixed)
     else:
         score = 2  # overbought/oversold or genuinely conflicting → hold
 

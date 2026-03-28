@@ -334,9 +334,9 @@ RSI thresholds:
 | EMA | RSI zone | Score | Signal | Direction | Multiplier |
 |-----|----------|-------|--------|-----------|------------|
 | Bull | Bullish (40–75) | 4 | `strong_long` | long | 1.0 |
-| Bull | Not bearish, not overbought | 3 | `moderate_long` | long | 0.5 |
-| Bear | Bearish (25–60) | 1 | `moderate_short` | short | 0.5 |
-| Bear | Not bullish, not oversold | 0 | `strong_short` | short | 1.0 |
+| Bull | Not bearish, not overbought (RSI < 25) | 3 | `moderate_long` | long | 0.5 |
+| Bear | Not bullish, not oversold (RSI 25–40 or RSI > 75) | 0 | `strong_short` | short | 1.0 |
+| Bear | Mixed (RSI 40–60, both bull and bear zones) | 1 | `moderate_short` | short | 0.5 |
 | Conflicting / overbought / oversold | — | 2 | `hold` | none | 0.0 |
 
 If both Coinbase and Kraken fail, fall back to the CoinGecko 3-timeframe signal
