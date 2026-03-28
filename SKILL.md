@@ -137,6 +137,29 @@ effect on the BTC bot's collateral or health factor.
 This skill calls the `aave-leverage` MCP server on every cycle. The server uses the
 x402 payment protocol — sessions are paid in USDC on Base and are wallet-bound.
 
+**Why MCP + x402 instead of self-hosted inference?**
+
+The bot itself contains no LLM inference — all market research and decision logic runs
+as deterministic Python. The only external call that costs money is the MCP tool call
+to execute a trade on Aave. This is a deliberate economic choice:
+
+| Approach | Monthly cost (30-min cycle, cbBTC short) | Notes |
+|----------|------------------------------------------|-------|
+| MCP + x402 monthly session | **$4.00 flat** | All tool calls included |
+| Self-hosted Aave integration | $0 tool cost + infra + audit + maintenance | Full smart contract stack |
+| LLM inference per cycle | $0.01–$2.00+ per cycle depending on model | GPT-4o ≈ $0.01, Claude Opus ≈ $0.15 |
+
+For bots using heavier models (Opus, GPT-4, Gemini Ultra), a single inference call can
+cost more than the entire monthly MCP session. Even for lighter models, inference at
+1,440 cycles/month adds up. The MCP session decouples execution cost from model choice
+— you can run the smartest available LLM as your Layer 2 reviewer without worrying
+about per-cycle inference cost blowing out the P&L.
+
+The x402 protocol also means no API key management, no billing account, and no usage
+caps — the bot wallet pays on-chain when needed and the session stays open. This makes
+it suitable for fully autonomous deployment where there is no human managing
+subscription renewals or API quotas.
+
 **Pricing:**
 
 | Duration | Cost  | Best for |
