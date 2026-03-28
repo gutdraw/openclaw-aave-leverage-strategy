@@ -51,15 +51,19 @@ def get_open_trade(entries: list[dict]) -> Optional[dict]:
     return open_trade
 
 
-def get_effective_size(open_trade: Optional[dict], entries: list[dict]) -> tuple[float, float]:
+def get_effective_size(open_trade: Optional[dict], entries: list[dict]) -> tuple[float, float, float]:
     """
-    Return (total_supply, total_borrow) for the open position, including any increases.
-    Falls back to the original open entry values if no increases exist.
+    Return (total_supply, total_borrow, avg_entry_price) for the open position,
+    including any increases.  avg_entry_price is borrow-weighted so that P&L on
+    the combined position is computed correctly.
     """
     if open_trade is None:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     supply = float(open_trade.get("supply", 0))
     borrow = float(open_trade.get("borrow", 0))
+    entry_price = float(open_trade.get("entry_price", 0))
+    # running weighted sum: price × borrow for each tranche
+    weighted_price = entry_price * borrow
     open_ts = open_trade.get("ts", "")
     past_open = False
     for e in entries:
@@ -73,9 +77,14 @@ def get_effective_size(open_trade: Optional[dict], entries: list[dict]) -> tuple
         if e.get("action") == "close":
             break
         if e.get("action") == "increase":
-            supply += float(e.get("add_supply", 0))
-            borrow += float(e.get("add_borrow", 0))
-    return supply, borrow
+            add_b = float(e.get("add_borrow", 0))
+            add_s = float(e.get("add_supply", 0))
+            inc_price = float(e.get("price", entry_price))
+            supply += add_s
+            borrow += add_b
+            weighted_price += inc_price * add_b
+    avg_entry = weighted_price / borrow if borrow > 0 else entry_price
+    return supply, borrow, avg_entry
 
 
 def has_been_increased(open_trade: Optional[dict], entries: list[dict]) -> bool:

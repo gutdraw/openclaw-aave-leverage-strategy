@@ -124,7 +124,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     entries = state.load_entries(cfg.trades_file)
     open_trade: Optional[dict] = state.get_open_trade(entries)
     btc_dom_prev: Optional[float] = state.get_last_btc_dominance(entries)
-    eff_supply, eff_borrow = state.get_effective_size(open_trade, entries)
+    eff_supply, eff_borrow, eff_entry_price = state.get_effective_size(open_trade, entries)
     already_increased: bool = state.has_been_increased(open_trade, entries)
 
     # ── 2. Market data ────────────────────────────────────────────────────
@@ -207,7 +207,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         if hf < hf_close:
             log.warning("HF %.3f < %.3f — force close", hf, hf_close)
             res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res, eff_supply, eff_borrow)
+            trade_entry = _close_trade_entry(open_trade, data.price, cfg, "hf_close", res, eff_supply, eff_borrow, eff_entry_price)
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": "hf_close"})
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
@@ -224,7 +224,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
     # Runs before signal reversal — price-based stops are deterministic and
     # should always take priority over signal-based exits.
     if open_trade is not None:
-        entry_price  = float(open_trade.get("entry_price", 0))
+        # Use borrow-weighted avg entry price so increases don't inflate P&L
+        entry_price  = eff_entry_price if eff_entry_price > 0 else float(open_trade.get("entry_price", 0))
         supply_units = eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
         borrow_units = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
         trade_lev    = float(open_trade.get("leverage", cfg.leverage))
@@ -256,7 +257,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         if exit_reason:
             log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
             res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
-            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res, eff_supply, eff_borrow)
+            trade_entry = _close_trade_entry(open_trade, data.price, cfg, exit_reason, res, eff_supply, eff_borrow, eff_entry_price)
             cycle_entry["decision"] = exit_reason
             state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, trade_entry)
@@ -294,7 +295,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                     open_direction, sig.label, sig.score,
                 )
                 res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-                trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res, eff_supply, eff_borrow)
+                trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res, eff_supply, eff_borrow, eff_entry_price)
                 cycle_entry["decision"] = "signal_reversal"
                 state.append_entry(cfg.trades_file, cycle_entry)
                 state.append_entry(cfg.trades_file, trade_entry)
@@ -313,7 +314,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                         age_days, cfg.max_hold_days,
                     )
                     res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
-                    trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res, eff_supply, eff_borrow)
+                    trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res, eff_supply, eff_borrow, eff_entry_price)
                     cycle_entry["decision"] = "max_hold_days"
                     state.append_entry(cfg.trades_file, cycle_entry)
                     state.append_entry(cfg.trades_file, trade_entry)
@@ -423,6 +424,7 @@ def _close_trade_entry(
     res,
     eff_supply: float = 0.0,
     eff_borrow: float = 0.0,
+    eff_entry_price: float = 0.0,
 ) -> dict:
     # Use effective totals (including increases) for accurate P&L
     effective = dict(open_trade)
@@ -430,6 +432,9 @@ def _close_trade_entry(
         effective["supply"] = eff_supply
     if eff_borrow > 0:
         effective["borrow"] = eff_borrow
+    # Use borrow-weighted avg entry price when position was increased
+    if eff_entry_price > 0:
+        effective["entry_price"] = eff_entry_price
     realised = pnl.compute_realised(effective, close_price)
     return {
         "type": "trade",
@@ -439,7 +444,7 @@ def _close_trade_entry(
         "direction": open_trade.get("direction", "long"),
         "position_id": open_trade.get("position_id"),
         "close_price": close_price,
-        "entry_price": open_trade.get("entry_price"),
+        "entry_price": effective.get("entry_price"),
         "supply": effective.get("supply"),
         "borrow": effective.get("borrow"),
         "leverage": open_trade.get("leverage"),
