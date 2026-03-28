@@ -15,6 +15,56 @@ and either opens, holds, adjusts, or closes a leveraged position — all without
 confirmation. Paper trading is the default: every trade is logged and P&L is tracked,
 but no on-chain transactions are submitted until you explicitly go live.
 
+## Architecture: two-layer design
+
+This system is intentionally split into two independent layers with different jobs.
+
+**Layer 1 — The bot (this skill): deterministic, always-on loop**
+
+A plain Python process that runs on a cron schedule (default: every 30 minutes). It has
+no AI inside it. Every cycle it:
+
+1. Fetches market data from public APIs and on-chain RPC
+2. Scores signals with hard-coded rules (EMA crossover, RSI, filters)
+3. Executes a decision (open / hold / increase / close) via the `aave-leverage` MCP tool
+4. Appends a structured JSON entry to `trades.jsonl` — price, signal, P&L, HF, carry
+
+The bot is designed to be dumb and reliable. An LLM failure, rate limit, or network
+hiccup must never touch a live position. The loop runs indefinitely and recovers cleanly
+from transient errors.
+
+**Layer 2 — The agent (your LLM): periodic reviewer and improver**
+
+An LLM agent (Claude, GPT, Hermes, or any multi-LLM framework) reads `trades.jsonl`
+periodically and reasons about what the bot is doing:
+
+- **Diagnose anomalies** — unusual HF swings, P&L inconsistencies, unexpected filter triggers
+- **Tune parameters** — RSI thresholds, TP/SL %, filter floors based on observed outcomes
+- **Propose strategy changes** — new indicators, exit conditions, asset additions
+- **Catch bugs** — the agent reviewing cycle logs is how most of the v1.1.x fixes were found
+- **Submit improvements** — generate a config or code change, open a PR, bot picks it up on next deploy
+
+The agent does not run the bot. It reads what the bot produced, reasons about it, and
+improves the system. The bot keeps running throughout — zero downtime.
+
+```
+EC2 / cron (always on, no AI)          Agent (periodic, LLM-powered)
+┌─────────────────────────────┐        ┌──────────────────────────────┐
+│  fetch market data          │        │  read trades.jsonl           │
+│  score signal               │        │  identify problems / gains   │
+│  execute decision via MCP   │   ──►  │  propose config/code changes │
+│  append to trades.jsonl     │        │  human reviews → merges PR   │
+└─────────────────────────────┘        └──────────────────────────────┘
+         ▲                                          │
+         └──────────── bot redeploys ───────────────┘
+```
+
+This split is what makes the system suitable for agent marketplaces and multi-LLM
+frameworks: any agent that can read a JSONL file and call tools can plug into Layer 2
+without touching the execution layer.
+
+---
+
 ## What this skill does
 
 | Capability | Detail |
