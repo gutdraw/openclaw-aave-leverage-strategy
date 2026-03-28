@@ -5,6 +5,12 @@ version: 1.1.2
 author: gutdraw
 tags: [defi, aave, leverage, base, crypto, trading, autonomous, strategy, paper-trading]
 requires_skill: aave-leverage
+entrypoint: python -m bot.main --config config.yml
+cron: 30m
+setup:
+  - pip install -r requirements.txt
+  - cp config.example.yml config.yml
+  - "# Edit config.yml: set user_address, run scripts/buy_session.py for mcp_session_token"
 ---
 
 # Aave Leverage Strategy
@@ -62,6 +68,41 @@ EC2 / cron (always on, no AI)          Agent (periodic, LLM-powered)
 This split is what makes the system suitable for agent marketplaces and multi-LLM
 frameworks: any agent that can read a JSONL file and call tools can plug into Layer 2
 without touching the execution layer.
+
+## Quick start (OpenClaw / local)
+
+No server needed. The bot runs locally wherever OpenClaw is running.
+
+```bash
+# 1. Clone and install
+git clone https://github.com/gutdraw/openclaw-aave-leverage-strategy
+cd openclaw-aave-leverage-strategy
+pip install -r requirements.txt
+
+# 2. Configure
+cp config.example.yml config.yml
+# Edit config.yml — set user_address, asset, paper_trading: true
+
+# 3. Buy an MCP session token (needs USDC on Base)
+export PRIVATE_KEY=0xYOUR_KEY
+python scripts/buy_session.py --wallet 0xYOUR_WALLET --duration month --config config.yml
+
+# 4. Run one cycle (test)
+python -m bot.main --config config.yml
+
+# 5. Run on a schedule via OpenClaw
+/cron 30m python -m bot.main --config config.yml
+```
+
+That's it. `trades.jsonl` is created in the repo directory and grows with every cycle.
+To review performance, ask your OpenClaw agent:
+
+```
+read trades.jsonl and summarize my position, P&L, and signal history
+```
+
+When ready to go live, set `paper_trading: false` in `config.yml` and ensure
+`PRIVATE_KEY` is set in your environment.
 
 ---
 
