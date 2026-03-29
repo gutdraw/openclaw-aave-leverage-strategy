@@ -138,24 +138,28 @@ def _ensure_wallet_token(
     _SLIPPAGE = 1.002  # 0.2% buffer — covers 0.05% Uniswap v3 fee + ~0.1% execution price drift
 
     if direction == "short":
-        # Short flash-loan loop needs USDC as collateral seed
+        # Short flash-loan loop needs USDC as collateral seed.
+        # Prefer spending the asset (cbBTC/WETH) first so USDC stays as the
+        # standing reserve. Only use USDC directly if asset balance is insufficient.
         usdc_bal = float(wb.get("USDC", 0) or 0)
-        if usdc_bal >= seed_usd * 0.95:
-            return True  # already have enough USDC
 
-        # Try swapping cfg.short_borrow_asset or cfg.asset → USDC
         for tok in (cfg.short_borrow_asset, cfg.asset):
             tok_bal = float(wb.get(tok, 0) or 0)
             tok_val_usd = tok_bal * data.price
             if tok_val_usd >= seed_usd * 0.95:
+                # Enough asset to cover the full seed — swap it, preserve USDC
                 swap_qty = min(seed_usd / data.price * _SLIPPAGE, tok_bal)
                 log.info(
-                    "Swapping %.6f %s → USDC (need %.2f USDC seed for short)",
+                    "Swapping %.6f %s → USDC (seed=%.2f, preserving USDC reserve)",
                     swap_qty, tok, seed_usd,
                 )
                 swap_hash = signer.execute_steps(mcp.swap(tok, "USDC", swap_qty))
                 cycle_entry["pre_swap"] = f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
                 return None
+
+        # Asset alone not enough — fall back to USDC if it covers the seed
+        if usdc_bal >= seed_usd * 0.95:
+            return True  # use USDC directly, no swap needed
 
         log.warning(
             "Insufficient wallet funds for short: need %.2f USDC seed, "
