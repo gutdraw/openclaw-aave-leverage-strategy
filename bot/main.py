@@ -88,7 +88,8 @@ def _paper_health_factor(
         lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
         if borrow <= 0:
             return 999.0
-        return (leverage * supply * lt) / borrow
+        # HF = (supply_asset * price * lt) / borrow_usdc
+        return (supply * price * lt) / borrow
 
 
 def _position_id_for(direction: str, cfg: BotConfig, raw_cfg: dict) -> str:
@@ -202,7 +203,7 @@ def _ensure_wallet_token(
 
 # ── Single cycle ──────────────────────────────────────────────────────────────
 
-def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
+def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
     """Run one full strategy cycle. Returns the cycle log entry."""
     mcp = MCPClient(
         base_url=cfg.mcp_url,
@@ -212,7 +213,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         config_path=cfg._config_path,
         session_duration=cfg.mcp_session_duration,
     )
-    signer = _build_signer(cfg)
+    if signer is None:
+        signer = _build_signer(cfg)
 
     # ── 1. State ──────────────────────────────────────────────────────────
     entries = state.load_entries(cfg.trades_file)
@@ -389,7 +391,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                     "Signal reversal exit: %s position, signal=%s score=%d",
                     open_direction, sig.label, sig.score,
                 )
-                res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
+                res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
                 trade_entry = _close_trade_entry(open_trade, data.price, cfg, "signal_reversal", res, eff_supply, eff_borrow, eff_entry_price)
                 cycle_entry["decision"] = "signal_reversal"
                 state.append_entry(cfg.trades_file, cycle_entry)
@@ -408,7 +410,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
                         "Time-based exit: position age %.1fd >= max_hold_days %.1fd",
                         age_days, cfg.max_hold_days,
                     )
-                    res = executor.close_position(pos_id, open_direction, float(open_trade.get("supply", 0)), cfg, mcp, signer)
+                    res = executor.close_position(pos_id, open_direction, supply_units, cfg, mcp, signer)
                     trade_entry = _close_trade_entry(open_trade, data.price, cfg, "max_hold_days", res, eff_supply, eff_borrow, eff_entry_price)
                     cycle_entry["decision"] = "max_hold_days"
                     state.append_entry(cfg.trades_file, cycle_entry)
@@ -475,18 +477,31 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         if (last_close is not None
                 and last_close.get("reason") == "take_profit"
                 and last_close.get("direction") == sig.direction):
-            is_max_strength = (
-                (sig.direction == "long"  and sig.score == 3)
-                or (sig.direction == "short" and sig.score == 0)
-            )
-            if not is_max_strength:
-                log.info(
-                    "Post-TP gate: last %s close was TP, signal %s not at max strength — skip",
-                    sig.direction, sig.label,
+            # Gate expires after post_tp_gate_hours — prevents indefinite blocking
+            # in range-bound markets where strong signal never fires.
+            gate_active = True
+            if cfg.post_tp_gate_hours > 0:
+                try:
+                    tp_time = datetime.fromisoformat(last_close["ts"].replace("Z", "+00:00"))
+                    hours_since = (datetime.now(timezone.utc) - tp_time).total_seconds() / 3600
+                    if hours_since >= cfg.post_tp_gate_hours:
+                        gate_active = False
+                        log.info("Post-TP gate expired (%.1fh > %.1fh) — allowing reopen", hours_since, cfg.post_tp_gate_hours)
+                except (KeyError, ValueError, TypeError):
+                    pass
+            if gate_active:
+                is_max_strength = (
+                    (sig.direction == "long"  and sig.score == 3)
+                    or (sig.direction == "short" and sig.score == 0)
                 )
-                cycle_entry["decision"] = "skip_post_tp"
-                state.append_entry(cfg.trades_file, cycle_entry)
-                return cycle_entry
+                if not is_max_strength:
+                    log.info(
+                        "Post-TP gate: last %s close was TP, signal %s not at max strength — skip",
+                        sig.direction, sig.label,
+                    )
+                    cycle_entry["decision"] = "skip_post_tp"
+                    state.append_entry(cfg.trades_file, cycle_entry)
+                    return cycle_entry
 
     if open_trade is None and sig.multiplier > 0:
         eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
@@ -613,21 +628,28 @@ def main() -> None:
     mode = "PAPER" if cfg.paper_trading else "LIVE"
     log.info("Bot starting — asset=%s short_borrow=%s mode=%s", cfg.asset, cfg.short_borrow_asset, mode)
 
+    # Build signer once outside the loop so nonce state persists across cycles.
+    # Each new Signer re-fetches nonce from chain, creating a race if the previous
+    # cycle's tx is still pending. One Signer per process avoids this entirely.
+    signer = _build_signer(cfg)
+
     if args.loop > 0:
         while True:
             try:
-                result = run_cycle(cfg, raw_cfg)
+                result = run_cycle(cfg, raw_cfg, signer)
                 log.info(
                     "Cycle done — decision=%s direction=%s price=%.2f",
                     result.get("decision"), result.get("direction"), result.get("price", 0),
                 )
             except Exception as e:
                 log.error("Cycle error: %s", e, exc_info=True)
+                if signer:
+                    signer.reset_nonce()  # force re-fetch after any error
             log.info("Sleeping %ds…", args.loop)
             time.sleep(args.loop)
     else:
         try:
-            result = run_cycle(cfg, raw_cfg)
+            result = run_cycle(cfg, raw_cfg, signer)
             log.info(
                 "Cycle done — decision=%s direction=%s price=%.2f",
                 result.get("decision"), result.get("direction"), result.get("price", 0),

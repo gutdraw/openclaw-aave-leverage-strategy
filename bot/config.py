@@ -76,6 +76,10 @@ class BotConfig:
     # signal is still at maximum strength in the trade direction — let winners ride.
     # SL always applies. Set True to restore fixed-TP behaviour regardless of signal.
     tp_on_strong_signal: bool = False
+    # Post-TP gate expiry: hours after a TP before moderate-signal same-direction
+    # reopen is allowed again. Prevents indefinite blocking in range-bound markets.
+    # Set 0 to disable (gate never expires — requires strong signal to reopen).
+    post_tp_gate_hours: float = 48.0
 
     # ── On-chain ──────────────────────────────────────────────────────────
     # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).

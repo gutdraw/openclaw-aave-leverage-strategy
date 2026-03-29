@@ -64,18 +64,16 @@ def open_position(
     if direction == "long":
         log.info("swap USDC → %s amount=%.6f", cfg.asset, amount)
         swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
-        swap_hash = signer.sign_and_send(swap_resp["transaction"])
-        signer.wait_for_receipt(swap_hash)
+        swap_hash = signer.execute_steps(swap_resp)
         log.info("swap tx %s", swap_hash)
 
     resp = mcp.prepare_open(
-        leverage=cfg.leverage,
+        leverage=cfg.leverage_for(direction),
         amount=amount,
         supply_asset=supply_asset,
         borrow_asset=borrow_asset,
     )
-    tx_hash = signer.sign_and_send(resp["transaction"])
-    signer.wait_for_receipt(tx_hash)
+    tx_hash = signer.execute_steps(resp)
     log.info("open %s tx %s", direction, tx_hash)
     return ExecResult(action="open", tx_hash=tx_hash, raw=resp)
 
@@ -103,17 +101,26 @@ def close_position(
         return ExecResult(action="paper", tx_hash=None, raw={"paper": True, "position_id": position_id})
 
     resp = mcp.prepare_close(position_id=position_id)
-    tx_hash = signer.sign_and_send(resp["transaction"])
-    signer.wait_for_receipt(tx_hash)
+    tx_hash = signer.execute_steps(resp)
     log.info("close tx %s", tx_hash)
 
-    # Swap asset→USDC after closing a long so bot is always flat in stable
-    if direction == "long" and asset_amount > 0:
-        log.info("swap %s → USDC amount=%.6f", cfg.asset, asset_amount)
-        swap_resp = mcp.swap(token_in=cfg.asset, token_out="USDC", amount_in=asset_amount)
-        swap_hash = signer.sign_and_send(swap_resp["transaction"])
-        signer.wait_for_receipt(swap_hash)
-        log.info("swap tx %s", swap_hash)
+    # Swap asset→USDC after closing a long so bot is always flat in stable.
+    # Use actual post-close wallet balance rather than the stale supply figure —
+    # flash-loan unwind may return slightly more or less than the original supply.
+    if direction == "long":
+        actual_asset = 0.0
+        try:
+            pos = mcp.get_position()
+            wb = pos.get("tokenBalances") or pos.get("wallet_balances") or {}
+            actual_asset = float(wb.get(cfg.asset, 0) or 0)
+        except Exception as e:
+            log.warning("post-close balance fetch failed, falling back to supply amount: %s", e)
+            actual_asset = asset_amount
+        if actual_asset > 0:
+            log.info("swap %s → USDC amount=%.6f (post-close balance)", cfg.asset, actual_asset)
+            swap_resp = mcp.swap(token_in=cfg.asset, token_out="USDC", amount_in=actual_asset)
+            swap_hash = signer.execute_steps(swap_resp)
+            log.info("swap tx %s", swap_hash)
 
     return ExecResult(action="close", tx_hash=tx_hash, raw=resp)
 
@@ -151,17 +158,15 @@ def increase_position(
     if direction == "long":
         log.info("swap USDC → %s amount=%.6f (increase)", cfg.asset, amount)
         swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
-        swap_hash = signer.sign_and_send(swap_resp["transaction"])
-        signer.wait_for_receipt(swap_hash)
+        signer.execute_steps(swap_resp)
 
     resp = mcp.prepare_increase(
-        leverage=cfg.leverage,
+        leverage=cfg.leverage_for(direction),
         amount=amount,
         supply_asset=supply_asset,
         borrow_asset=borrow_asset,
     )
-    tx_hash = signer.sign_and_send(resp["transaction"])
-    signer.wait_for_receipt(tx_hash)
+    tx_hash = signer.execute_steps(resp)
     log.info("increase %s tx %s", direction, tx_hash)
     return ExecResult(action="increase", tx_hash=tx_hash, raw=resp)
 
@@ -190,7 +195,6 @@ def reduce_position(
         borrow_asset=borrow_asset,
         target_leverage=target_leverage,
     )
-    tx_hash = signer.sign_and_send(resp["transaction"])
-    signer.wait_for_receipt(tx_hash)
+    tx_hash = signer.execute_steps(resp)
     log.info("reduce tx %s", tx_hash)
     return ExecResult(action="reduce", tx_hash=tx_hash, raw=resp)
