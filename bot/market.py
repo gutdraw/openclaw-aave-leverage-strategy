@@ -55,6 +55,7 @@ class MarketData:
     recent_liquidations: Optional[int] = None # LiquidationCall events in last ~5 min
     usdc_supply_apy: Optional[float] = None   # Aave USDC supply APY % (earned on short collateral)
     asset_borrow_apy: Optional[float] = None  # Aave asset borrow APY % (paid when short)
+    wallet_collateral_usd: float = 0.0        # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
 
 
 def fetch(
@@ -104,6 +105,19 @@ def fetch(
         total_collateral_usd = float(pos["aave"]["totalCollateralUSD"])
     except Exception as e:
         sources_failed.append(f"get_position:{e}")
+
+    # Wallet balances — used as collateral fallback when Aave position is closed
+    # wallet_balances keys are token amounts (not USD); USDC ≈ $1 so it's direct.
+    # For the supply asset (e.g. WETH, cbBTC), multiply by price (populated below if CG succeeded).
+    wallet_collateral_usd = 0.0
+    if pos is not None:
+        # MCP returns balances under "tokenBalances"; fall back to "wallet_balances" for compatibility
+        wb = pos.get("tokenBalances") or pos.get("wallet_balances") or {}
+        try:
+            wallet_usdc = float(wb.get("USDC", 0) or 0)
+            wallet_collateral_usd = wallet_usdc
+        except (TypeError, ValueError):
+            pass
 
     # Extract short carry rates from position data (both optional — keys may not exist)
     usdc_supply_apy = asset_borrow_apy = None
@@ -168,6 +182,15 @@ def fetch(
     except Exception as e:
         sources_failed.append(f"fear_greed:{e}")
 
+    # Add asset wallet balance in USD now that we have price
+    if pos is not None and price is not None and price > 0:
+        try:
+            wb = pos.get("tokenBalances") or pos.get("wallet_balances") or {}
+            wallet_asset_usd = float(wb.get(asset, 0) or 0) * price
+            wallet_collateral_usd = max(wallet_collateral_usd, wallet_asset_usd)
+        except (TypeError, ValueError):
+            pass
+
     succeeded = sum(x is not None for x in [price, borrow_apr, btc_dominance])
     if succeeded < 2:
         raise RuntimeError(
@@ -200,4 +223,5 @@ def fetch(
         recent_liquidations=oc.recent_liquidations,
         usdc_supply_apy=usdc_supply_apy,
         asset_borrow_apy=asset_borrow_apy,
+        wallet_collateral_usd=wallet_collateral_usd,
     ), sources_failed

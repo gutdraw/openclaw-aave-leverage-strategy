@@ -109,6 +109,93 @@ def _build_signer(cfg: BotConfig):
     return Signer(rpc_url=rpc, private_key=pk)
 
 
+# ── Pre-open token swap ───────────────────────────────────────────────────────
+
+def _ensure_wallet_token(
+    direction: str,
+    seed_usd: float,
+    data,
+    cfg: BotConfig,
+    mcp: MCPClient,
+    signer,
+    cycle_entry: dict,
+) -> bool | None:
+    """
+    Ensure the wallet holds the correct token before opening a position.
+
+    - Short: needs USDC as seed. If wallet only has the borrow asset (or cfg.asset),
+      swap just enough asset → USDC to cover seed_usd.
+    - Long: needs the supply asset. If wallet only has USDC, swap USDC → asset.
+
+    Returns:
+        True  — correct token already present (no swap needed)
+        None  — swap executed successfully
+        False — insufficient wallet funds; caller should skip and log cycle_entry
+
+    Adds 1.5% to swap amount to cover DEX slippage.
+    """
+    wb = data.position_data.get("tokenBalances") or data.position_data.get("wallet_balances") or {}
+    _SLIPPAGE = 1.002  # 0.2% buffer — covers 0.05% Uniswap v3 fee + ~0.1% execution price drift
+
+    if direction == "short":
+        # Short flash-loan loop needs USDC as collateral seed
+        usdc_bal = float(wb.get("USDC", 0) or 0)
+        if usdc_bal >= seed_usd * 0.95:
+            return True  # already have enough USDC
+
+        # Try swapping cfg.short_borrow_asset or cfg.asset → USDC
+        for tok in (cfg.short_borrow_asset, cfg.asset):
+            tok_bal = float(wb.get(tok, 0) or 0)
+            tok_val_usd = tok_bal * data.price
+            if tok_val_usd >= seed_usd * 0.95:
+                swap_qty = min(seed_usd / data.price * _SLIPPAGE, tok_bal)
+                log.info(
+                    "Swapping %.6f %s → USDC (need %.2f USDC seed for short)",
+                    swap_qty, tok, seed_usd,
+                )
+                swap_hash = signer.execute_steps(mcp.swap(tok, "USDC", swap_qty))
+                cycle_entry["pre_swap"] = f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
+                return None
+
+        log.warning(
+            "Insufficient wallet funds for short: need %.2f USDC seed, "
+            "wallet USDC=%.2f %s=%.6f — skip",
+            seed_usd, usdc_bal, cfg.short_borrow_asset,
+            float(wb.get(cfg.short_borrow_asset, 0) or 0),
+        )
+        cycle_entry["decision"] = "skip_insufficient_funds"
+        return False
+
+    else:
+        # Long flash-loan loop needs the supply asset
+        asset_bal = float(wb.get(cfg.asset, 0) or 0)
+        asset_val_usd = asset_bal * data.price
+        supply_needed_usd = seed_usd  # seed_usd = supply × price
+        if asset_val_usd >= supply_needed_usd * 0.95:
+            return True  # already have enough of the asset
+
+        # Try swapping USDC → asset
+        usdc_bal = float(wb.get("USDC", 0) or 0)
+        if usdc_bal >= supply_needed_usd * 0.95:
+            swap_usd = min(supply_needed_usd * _SLIPPAGE, usdc_bal)
+            log.info(
+                "Swapping %.2f USDC → %s (need %.2f USD of asset for long)",
+                swap_usd, cfg.asset, supply_needed_usd,
+            )
+            swap_hash = signer.execute_steps(mcp.swap("USDC", cfg.asset, swap_usd))
+            cycle_entry["pre_swap"] = f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
+            return None
+
+        log.warning(
+            "Insufficient wallet funds for long: need ~%.2f USD of %s, "
+            "wallet %s=%.6f (%.2f USD) USDC=%.2f — skip",
+            supply_needed_usd, cfg.asset,
+            cfg.asset, asset_bal, asset_val_usd, usdc_bal,
+        )
+        cycle_entry["decision"] = "skip_insufficient_funds"
+        return False
+
+
 # ── Single cycle ──────────────────────────────────────────────────────────────
 
 def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
@@ -177,13 +264,14 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         # carry = usdc_supply_apy × (lev+1) − asset_borrow_apy × lev
         "short_carry_apr": (
             round(
-                data.usdc_supply_apy * (min(cfg.leverage, cfg.short_max_leverage) + 1)
-                - data.asset_borrow_apy * min(cfg.leverage, cfg.short_max_leverage),
+                data.usdc_supply_apy * (cfg.leverage_for("short") + 1)
+                - data.asset_borrow_apy * cfg.leverage_for("short"),
                 4,
             )
             if data.usdc_supply_apy is not None and data.asset_borrow_apy is not None
             else None
         ),
+        "wallet_collateral_usd": round(data.wallet_collateral_usd, 2),
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
         "cg_signal": cg_sig.label,
@@ -335,7 +423,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         )
         if signal_upgraded:
             current_seed = float(open_trade.get("seed_usd", 0))
-            delta = sizing.compute_increase(data.total_collateral_usd, data.price, sig, cfg, current_seed)
+            eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
+            delta = sizing.compute_increase(eff_collateral, data.price, sig, cfg, current_seed)
             if delta.supply > 0:
                 log.info(
                     "Signal upgraded to %s — increasing position by seed_usd=%.2f",
@@ -372,12 +461,47 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
         return cycle_entry
 
     # ── 7. Open new position ──────────────────────────────────────────────
+    # Post-TP consistency gate: if the last close was a TP in this same direction,
+    # only allow a same-direction reopen if the signal is at maximum strength —
+    # the same condition that would have suppressed the TP.  This prevents the
+    # awkward sequence of TP → immediate reopen at moderate signal conviction.
+    # Gate is skipped when tp_on_strong_signal=True (TP always fires, no suppression).
+    if open_trade is None and sig.multiplier > 0 and not cfg.tp_on_strong_signal:
+        last_close = state.get_last_close(entries)
+        if (last_close is not None
+                and last_close.get("reason") == "take_profit"
+                and last_close.get("direction") == sig.direction):
+            is_max_strength = (
+                (sig.direction == "long"  and sig.score == 3)
+                or (sig.direction == "short" and sig.score == 0)
+            )
+            if not is_max_strength:
+                log.info(
+                    "Post-TP gate: last %s close was TP, signal %s not at max strength — skip",
+                    sig.direction, sig.label,
+                )
+                cycle_entry["decision"] = "skip_post_tp"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
+
     if open_trade is None and sig.multiplier > 0:
-        size = sizing.compute(data.total_collateral_usd, data.price, sig, cfg)
+        eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
+        size = sizing.compute(eff_collateral, data.price, sig, cfg)
         if size.supply <= 0:
             cycle_entry["decision"] = "skip_zero_size"
             state.append_entry(cfg.trades_file, cycle_entry)
             return cycle_entry
+
+        # In live mode: if collateral is coming from wallet (Aave is empty after a close),
+        # ensure the wallet holds the right token for this position type.
+        # Shorts need USDC as seed; longs need the supply asset.
+        # If the wallet holds value in the other token, swap it first.
+        if not cfg.paper_trading and data.total_collateral_usd == 0:
+            swapped = _ensure_wallet_token(sig.direction, size.seed_usd, data, cfg, mcp, signer, cycle_entry)
+            if swapped is False:
+                # Insufficient funds — already appended cycle entry
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
 
         min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
         if data.health_factor < min_hf and data.health_factor != 999.0:
@@ -404,7 +528,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict) -> dict:
             "supply": size.supply,
             "borrow": size.borrow,
             "seed_usd": size.seed_usd,
-            "leverage": min(cfg.leverage, cfg.short_max_leverage) if sig.direction == "short" else cfg.leverage,
+            "leverage": cfg.leverage_for(sig.direction),
             "paper": cfg.paper_trading,
             "tx_hash": res.tx_hash,
         }

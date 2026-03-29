@@ -1,5 +1,82 @@
 # Changelog
 
+## [1.2.1] — 2026-03-29
+
+### Added — Direction-specific leverage
+- **`long_leverage` / `short_leverage` config fields** (`config.py`, `sizing.py`): Override
+  `leverage` for each direction independently. `0` means "use the shared `leverage` value."
+  `short_leverage` is still capped at `short_max_leverage` (hard safety limit). Useful for
+  running higher conviction on longs (e.g. 3x) while capping shorts at 2x for HF safety.
+- **`cfg.leverage_for(direction)`** (`config.py`): Helper method used by `sizing.py` and
+  `main.py` wherever direction-aware leverage is needed — cycle log `short_carry_apr`,
+  trade entry `leverage` field, both `compute()` and `compute_increase()` in `sizing.py`.
+
+### Fixed — Post-TP reopen consistency
+- **`skip_post_tp` decision** (`main.py`, `state.py`): After a take-profit close, the bot
+  now gates same-direction reopening on the same signal strength that would have suppressed
+  the TP. Previously, a TP could fire on a moderate signal and the bot would immediately
+  reopen in the same direction — inconsistent with `tp_on_strong_signal=false` intent.
+  Now: after a TP close, a same-direction reopen requires `score==3` (strong_long) for
+  longs or `score==0` (strong_short) for shorts. Only applies when
+  `tp_on_strong_signal=false` (default). Gate is a no-op when `tp_on_strong_signal=true`.
+- **`state.get_last_close()`** (`state.py`): New helper — returns the most recent
+  `action=close` trade entry. Used by the post-TP gate in `main.py`.
+
+## [1.2.0] — 2026-03-29
+
+### Added — Live transaction signing (signer.py + MCP server normalisation)
+- **Unified MCP response format** (`aave-leverage-agent/api/src/routes/mcp.py`): all
+  seven prepare_* and swap tools now return a single consistent shape:
+  `{"transaction_steps": [{contract, abi_fn, args, gas, title, ...}]}`.
+  Previously `prepare_open` / `prepare_close` returned a bespoke `calldata` dict
+  requiring client-side ABI re-encoding; `prepare_reduce` / `prepare_increase` used bare
+  function names; `swap` passed struct args as a dict. Now every step carries a full ABI
+  signature and flat positional args — no tool-specific logic needed in the signer.
+- **Full ABI signatures in all steps** (`mcp.py`): `abi_fn` fields upgraded from bare
+  names (`"approve"`, `"reduceLeverage"`) to complete signatures
+  (`"approve(address,uint256)"`,
+  `"reduceLeverage(address,address,address,address,uint256,uint24,uint256,bytes)"`, etc.).
+  Signer encodes directly from the signature — no lookup table required.
+- **Uniswap struct args as ordered lists** (`mcp.py`): `exactInputSingle` and
+  `exactInput` args changed from `[{"tokenIn":...}]` dict to
+  `[[tokenIn, tokenOut, fee, ...]]` list matching the ABI tuple layout. Signer handles
+  list-as-tuple natively via the recursive `_coerce_arg` type walker.
+- **Simplified signer** (`signer.py` rewrite): single `transaction_steps` execution
+  path replaces the previous four-branch dispatcher. Removed: `_expand_calldata_response`,
+  `_WELL_KNOWN_SIGS`, `_UNISWAP_STRUCT_FIELDS`, `_CLOSE_SIG`, `_OPEN_SIG`. Added:
+  `_coerce_arg` — a recursive Solidity-type-aware coercion function that correctly
+  handles `address`, `uint*/int*`, `bytes/bytesN`, and nested tuple `(T1,T2,...)` types.
+- **Allowance-skip moved to per-step check** (`signer._should_skip_approval`): replaces
+  the old inject-then-skip pattern inside `_expand_calldata_response`. Now runs for every
+  `approve` / `approveDelegation` step regardless of which tool produced it — avoids Base
+  sequencer's "in-flight transaction limit for delegated accounts" error universally.
+- **Nested-tuple-aware type parser** (`signer._split_sig_types`): replaces naive
+  `types_str.split(",")` which shredded tuple types like
+  `(address,address,uint24,...)` into fragments. Depth-tracking parser keeps each tuple
+  type intact as a single element in the types list.
+- **On-chain allowance check** (`signer._erc20_allowance`): direct `eth_call` to
+  `allowance(address,address)` — no ABI file required.
+- **Internal nonce tracker** (`signer._next_nonce`): initialised once from
+  `get_transaction_count("pending")`, incremented locally per step. Avoids RPC race
+  conditions between steps in a single cycle. `reset_nonce()` clears on error.
+- **EIP-1559 fee bump** (`signer.sign_and_send`): priority tip 1 gwei — replaces any
+  stuck pending txs from previous runs.
+- **Wallet balance fallback for position sizing** (`market.py`, `main.py`): when Aave
+  `totalCollateralUSD` is zero (position closed, wallet is flat), effective collateral
+  falls back to `wallet_collateral_usd` (USDC balance + asset balance × price). Allows
+  the bot to open the next position autonomously without manual USDC transfer.
+- **Pre-open token swap** (`main.py._ensure_wallet_token`): before opening a new live
+  position, checks whether the wallet holds the correct token side (USDC for shorts,
+  supply-asset for longs). If not, swaps via `mcp.swap()` at 0.2% slippage buffer.
+  Enables fully autonomous long/short cycling.
+
+### Fixed
+- **KeyError on MCP response keys**: executor.py previously called
+  `signer.sign_and_send(resp["transaction"])` — fails when MCP returns
+  `transaction_steps`. All calls replaced with `signer.execute_steps(resp)`.
+- **Stale log wording**: step log changed from "mined" to "sent" — the log fires before
+  `wait_for_receipt`, so "mined" was misleading.
+
 ## [1.1.2] — 2026-03-27
 
 ### Fixed

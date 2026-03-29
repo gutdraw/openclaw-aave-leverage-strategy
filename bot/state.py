@@ -108,6 +108,14 @@ def has_been_increased(open_trade: Optional[dict], entries: list[dict]) -> bool:
     return False
 
 
+def get_last_close(entries: list[dict]) -> Optional[dict]:
+    """Return the most recent close trade entry, or None."""
+    for e in reversed(entries):
+        if e.get("type") == "trade" and e.get("action") == "close":
+            return e
+    return None
+
+
 def get_last_btc_dominance(entries: list[dict]) -> Optional[float]:
     """Return BTC dominance % from the most recent cycle entry that has it."""
     for e in reversed(entries):

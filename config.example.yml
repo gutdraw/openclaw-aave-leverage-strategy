@@ -34,7 +34,9 @@ private_key: ""                # live mode only — prefer env var PRIVATE_KEY, 
 # POSITION SIZING
 # seed_usd = wallet_balance_usd x base_position_pct x signal_multiplier
 # ---------------------------------------------------------------
-leverage: 3.0
+leverage: 3.0               # default leverage for both directions
+long_leverage: 0.0          # override for longs only (0 = use leverage)
+short_leverage: 0.0         # override for shorts only (0 = use leverage, capped at short_max_leverage)
 max_leverage: 4.0
 base_position_pct: 0.20     # use 20% of wallet collateral balance as base seed
 strong_signal_size: 1.0     # multiplier for strong signal (all 3 timeframes aligned)

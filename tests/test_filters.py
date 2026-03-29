@@ -25,6 +25,14 @@ def _cfg(**kwargs):
     cfg.max_volatility_1h = 5.0
     cfg.max_borrow_apr = 8.0
     cfg.btc_dominance_rise_threshold = 2.0
+    cfg.max_funding_rate_long = 0.05
+    cfg.max_funding_rate_short = 0.05
+    cfg.max_fear_greed_long = 85
+    cfg.min_fear_greed_short = 15
+    cfg.fear_greed_short_rsi_floor = 35.0
+    cfg.min_volume_24h_usd = 0.0
+    cfg.max_usdc_utilization = 0.92
+    cfg.max_recent_liquidations = 3
     for k, v in kwargs.items():
         setattr(cfg, k, v)
     return cfg

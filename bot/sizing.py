@@ -45,12 +45,11 @@ def compute(
     if seed_usd <= 0 or price <= 0:
         return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)
 
+    lev = cfg.leverage_for(signal.direction)
     if signal.direction == "short":
-        lev = min(cfg.leverage, cfg.short_max_leverage)  # hard cap: 2x for shorts
         supply = seed_usd                          # USDC seed passed to MCP
         borrow = seed_usd * lev / price            # lev×seed in asset units (true Aave debt)
     else:
-        lev = cfg.leverage
         supply = seed_usd / price                  # asset units (e.g. ETH)
         borrow = supply * (lev - 1)               # USDC to borrow
 
@@ -79,12 +78,11 @@ def compute_increase(
     if increase_seed <= 0 or price <= 0:
         return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)
 
+    lev = cfg.leverage_for(signal.direction)
     if signal.direction == "short":
-        lev = min(cfg.leverage, cfg.short_max_leverage)
         supply = increase_seed
         borrow = increase_seed * lev / price
     else:
-        lev = cfg.leverage
         supply = increase_seed / price
         borrow = supply * (lev - 1)
 

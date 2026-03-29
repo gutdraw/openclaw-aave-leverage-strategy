@@ -23,7 +23,9 @@ class BotConfig:
     asset: str = "WETH"
     borrow_asset: str = "USDC"
     short_borrow_asset: str = "WETH"   # asset to borrow (short) — e.g. WETH or cbBTC
-    leverage: float = 3.0
+    leverage: float = 3.0              # default leverage for both directions
+    long_leverage: float = 0.0         # override leverage for longs only (0 = use leverage)
+    short_leverage: float = 0.0        # override leverage for shorts only (0 = use leverage)
     max_leverage: float = 4.0
     base_position_pct: float = 0.20
     strong_signal_size: float = 1.0
@@ -95,6 +97,17 @@ class BotConfig:
 
     # Internal — set by load(), not from config file
     _config_path: str = ""
+
+    def leverage_for(self, direction: str) -> float:
+        """Return the effective leverage cap for a given trade direction.
+
+        Respects long_leverage / short_leverage overrides if set (> 0).
+        Shorts are additionally capped at short_max_leverage (hard safety limit).
+        """
+        if direction == "short":
+            base = self.short_leverage if self.short_leverage > 0 else self.leverage
+            return min(base, self.short_max_leverage)
+        return self.long_leverage if self.long_leverage > 0 else self.leverage
 
     @classmethod
     def load(cls, path: str = "config.yml") -> "BotConfig":
