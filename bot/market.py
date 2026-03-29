@@ -182,12 +182,14 @@ def fetch(
     except Exception as e:
         sources_failed.append(f"fear_greed:{e}")
 
-    # Add asset wallet balance in USD now that we have price
+    # Add asset wallet balance in USD now that we have price — sum both tokens
+    # so mixed wallets (e.g. USDC + cbBTC) size correctly. _ensure_wallet_token
+    # will swap whatever is needed into the right token before opening.
     if pos is not None and price is not None and price > 0:
         try:
             wb = pos.get("tokenBalances") or pos.get("wallet_balances") or {}
             wallet_asset_usd = float(wb.get(asset, 0) or 0) * price
-            wallet_collateral_usd = max(wallet_collateral_usd, wallet_asset_usd)
+            wallet_collateral_usd += wallet_asset_usd
         except (TypeError, ValueError):
             pass
 
