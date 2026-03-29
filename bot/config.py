@@ -63,7 +63,11 @@ class BotConfig:
 
     # ── Exit rules ────────────────────────────────────────────────────────
     take_profit_pct: float = 5.0
+    long_take_profit_pct: float = 0.0   # override TP for longs (0 = use take_profit_pct)
+    short_take_profit_pct: float = 0.0  # override TP for shorts (0 = use take_profit_pct)
     stop_loss_pct: float = 3.0
+    long_stop_loss_pct: float = 0.0     # override SL for longs (0 = use stop_loss_pct)
+    short_stop_loss_pct: float = 0.0    # override SL for shorts (0 = use stop_loss_pct)
     # Signal reversal exit: close a long when signal flips to short (or vice versa).
     # Only triggers when the opposing score reaches signal_reversal_min_score or below.
     # e.g. default=1 means close long if signal score ≤ 1 (moderate_short or strong_short).
@@ -101,6 +105,18 @@ class BotConfig:
 
     # Internal — set by load(), not from config file
     _config_path: str = ""
+
+    def tp_for(self, direction: str) -> float:
+        """Return the effective take-profit % for the given direction."""
+        if direction == "short":
+            return self.short_take_profit_pct if self.short_take_profit_pct > 0 else self.take_profit_pct
+        return self.long_take_profit_pct if self.long_take_profit_pct > 0 else self.take_profit_pct
+
+    def sl_for(self, direction: str) -> float:
+        """Return the effective stop-loss % for the given direction."""
+        if direction == "short":
+            return self.short_stop_loss_pct if self.short_stop_loss_pct > 0 else self.stop_loss_pct
+        return self.long_stop_loss_pct if self.long_stop_loss_pct > 0 else self.stop_loss_pct
 
     def leverage_for(self, direction: str) -> float:
         """Return the effective leverage cap for a given trade direction.

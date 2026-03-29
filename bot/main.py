@@ -332,8 +332,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
             supply=supply_units,
             borrow=borrow_units,
             leverage=trade_lev,
-            take_profit_pct=cfg.take_profit_pct,
-            stop_loss_pct=cfg.stop_loss_pct,
+            take_profit_pct=cfg.tp_for(open_direction),
+            stop_loss_pct=cfg.sl_for(open_direction),
             direction=open_direction,
         )
         cycle_entry["unrealised_usd"] = round(p.unrealised_usd, 2)

@@ -46,8 +46,12 @@ moderate_signal_size: 0.5   # multiplier for moderate signal (2/3 timeframes ali
 # EXIT THRESHOLDS
 # Based on % move in the underlying asset from entry price.
 # ---------------------------------------------------------------
-take_profit_pct: 5.0        # close when asset is up 5% from entry
-stop_loss_pct: 3.0          # close when asset is down 3% from entry
+take_profit_pct: 5.0        # close when asset is up 5% from entry (default both directions)
+long_take_profit_pct: 0.0   # override TP for longs only (0 = use take_profit_pct)
+short_take_profit_pct: 0.0  # override TP for shorts only (0 = use take_profit_pct)
+stop_loss_pct: 3.0          # close when asset is down 3% from entry (default both directions)
+long_stop_loss_pct: 0.0     # override SL for longs only (0 = use stop_loss_pct)
+short_stop_loss_pct: 0.0    # override SL for shorts only (0 = use stop_loss_pct)
 
 # Signal reversal exit: close a position when the trend signal flips against it.
 # Trend-following literature strongly recommends this over fixed TP (which caps winners).
@@ -67,6 +71,11 @@ max_hold_days: 14.0
 # signal is still at maximum strength (score=3 for longs, score=0 for shorts).
 # SL always applies. Set true to restore fixed-TP behaviour.
 tp_on_strong_signal: false
+
+# Post-TP gate: after a take-profit close, require max-strength signal to reopen same direction.
+# Prevents immediately re-entering into the same move that just TP'd at moderate signal.
+# Gate expires after post_tp_gate_hours hours. Set 0 to never expire (requires strong signal always).
+post_tp_gate_hours: 48.0
 
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
