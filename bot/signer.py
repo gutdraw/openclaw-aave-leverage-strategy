@@ -272,7 +272,7 @@ class Signer:
         if "maxFeePerGas" not in tx and "gasPrice" not in tx:
             latest   = self.w3.eth.get_block("latest")
             base_fee = latest.get("baseFeePerGas", self.w3.to_wei(0.1, "gwei"))
-            priority = self.w3.to_wei(1, "gwei")   # 1 gwei replaces any stuck pending tx
+            priority = self.w3.to_wei(0.005, "gwei")  # 0.005 gwei tip — sufficient on Base (base fee ~0.001 gwei)
             tx["maxPriorityFeePerGas"] = priority
             tx["maxFeePerGas"]         = base_fee * 2 + priority
 
