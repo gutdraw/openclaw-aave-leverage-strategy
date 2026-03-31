@@ -158,7 +158,7 @@ def _ensure_wallet_token(
                 cycle_entry["pre_swap"] = f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
                 log.info("waiting for swap confirmation: %s", swap_hash)
                 signer.wait_for_receipt(swap_hash)
-                time.sleep(8)  # let MCP's RPC node catch up before prepare_open reads balance
+                time.sleep(3)  # brief pause for RPC propagation before prepare_open reads balance
                 log.info("swap confirmed — proceeding to open")
                 return None
 
@@ -196,7 +196,7 @@ def _ensure_wallet_token(
             cycle_entry["pre_swap"] = f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
             log.info("waiting for swap confirmation: %s", swap_hash)
             signer.wait_for_receipt(swap_hash)
-            time.sleep(8)  # let MCP's RPC node catch up before prepare_open reads balance
+            time.sleep(3)  # brief pause for RPC propagation before prepare_open reads balance
             log.info("swap confirmed — proceeding to open")
             return None
 
