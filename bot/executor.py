@@ -60,12 +60,8 @@ def open_position(
             raw={"paper": True, "direction": direction, "supply": amount, "borrow": size.borrow},
         )
 
-    # Live mode — swap USDC→asset before opening a long
-    if direction == "long":
-        log.info("swap USDC → %s amount=%.6f", cfg.asset, amount)
-        swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
-        swap_hash = signer.execute_steps(swap_resp)
-        log.info("swap tx %s", swap_hash)
+    # Pre-swap (USDC→asset for longs) is handled by _ensure_wallet_token in main.py
+    # before executor is called — do not swap again here.
 
     resp = mcp.prepare_open(
         leverage=cfg.leverage_for(direction),
@@ -155,10 +151,7 @@ def increase_position(
             raw={"paper": True, "direction": direction, "supply": amount, "borrow": size.borrow},
         )
 
-    if direction == "long":
-        log.info("swap USDC → %s amount=%.6f (increase)", cfg.asset, amount)
-        swap_resp = mcp.swap(token_in="USDC", token_out=cfg.asset, amount_in=size.seed_usd)
-        signer.execute_steps(swap_resp)
+    # Pre-swap handled by _ensure_wallet_token in main.py before executor is called.
 
     resp = mcp.prepare_increase(
         leverage=cfg.leverage_for(direction),
