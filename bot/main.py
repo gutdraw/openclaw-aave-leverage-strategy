@@ -183,13 +183,14 @@ def _ensure_wallet_token(
         if asset_val_usd >= supply_needed_usd * 0.95:
             return True  # already have enough of the asset
 
-        # Try swapping USDC → asset
+        # Top up with USDC — swap only the shortfall (or full amount if no asset)
         usdc_bal = float(wb.get("USDC", 0) or 0)
-        if usdc_bal >= supply_needed_usd * 0.95:
-            swap_usd = min(supply_needed_usd * _SLIPPAGE, usdc_bal)
+        shortfall_usd = supply_needed_usd - asset_val_usd
+        if usdc_bal >= shortfall_usd * 0.95:
+            swap_usd = min(shortfall_usd * _SLIPPAGE, usdc_bal)
             log.info(
-                "Swapping %.2f USDC → %s (need %.2f USD of asset for long)",
-                swap_usd, cfg.asset, supply_needed_usd,
+                "Swapping %.2f USDC → %s (have %.2f USD of asset, need %.2f, topping up shortfall)",
+                swap_usd, cfg.asset, asset_val_usd, supply_needed_usd,
             )
             swap_hash = signer.execute_steps(mcp.swap("USDC", cfg.asset, swap_usd))
             cycle_entry["pre_swap"] = f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
