@@ -281,7 +281,10 @@ class Signer:
         return tx_hash.hex()
 
     def wait_for_receipt(self, tx_hash: str, timeout: int = 120) -> dict:
-        """Block until the tx is mined and return the receipt."""
-        return dict(
+        """Block until the tx is mined, raise if it reverted."""
+        receipt = dict(
             self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
         )
+        if receipt.get("status") == 0:
+            raise RuntimeError(f"tx reverted on-chain: {tx_hash}")
+        return receipt
