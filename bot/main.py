@@ -156,6 +156,9 @@ def _ensure_wallet_token(
                 )
                 swap_hash = signer.execute_steps(mcp.swap(tok, "USDC", swap_qty))
                 cycle_entry["pre_swap"] = f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
+                log.info("waiting for swap confirmation: %s", swap_hash)
+                signer.wait_for_receipt(swap_hash)
+                log.info("swap confirmed — proceeding to open")
                 return None
 
         # Asset alone not enough — fall back to USDC if it covers the seed
@@ -189,6 +192,9 @@ def _ensure_wallet_token(
             )
             swap_hash = signer.execute_steps(mcp.swap("USDC", cfg.asset, swap_usd))
             cycle_entry["pre_swap"] = f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
+            log.info("waiting for swap confirmation: %s", swap_hash)
+            signer.wait_for_receipt(swap_hash)
+            log.info("swap confirmed — proceeding to open")
             return None
 
         log.warning(
