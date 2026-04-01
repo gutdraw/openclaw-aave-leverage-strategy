@@ -530,6 +530,15 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
                 # Insufficient funds — already appended cycle entry
                 state.append_entry(cfg.trades_file, cycle_entry)
                 return cycle_entry
+            if swapped is True and sig.direction == "long":
+                # No swap was needed — wallet already holds the asset.
+                # Cap size.supply to actual balance: CoinGecko price vs swap execution price
+                # can differ by tiny fractions, causing prepare_open's balance check to reject.
+                wb = data.position_data.get("tokenBalances") or data.position_data.get("wallet_balances") or {}
+                actual_bal = float(wb.get(cfg.asset, 0) or 0)
+                if actual_bal < size.supply:
+                    from bot.sizing import PositionSize
+                    size = PositionSize(seed_usd=size.seed_usd, supply=actual_bal, borrow=size.borrow)
 
         min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
         if data.health_factor < min_hf and data.health_factor != 999.0:
