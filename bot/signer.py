@@ -28,6 +28,7 @@ Architecture (Base mainnet):
 from __future__ import annotations
 
 import logging
+import time
 
 from eth_account import Account
 from web3 import Web3
@@ -191,8 +192,13 @@ class Signer:
             except Exception:
                 self.reset_nonce()
                 raise
+            fn_name = step.get("abi_fn", "").split("(")[0]
             log.info("tx %s sent (%s)", last_hash, step.get("title", step.get("type", "?")))
             self.wait_for_receipt(last_hash)
+            if fn_name in ("approve", "approveDelegation"):
+                # Base sequencer tracks "delegated accounts" with a 1-in-flight limit.
+                # Give it a moment to clear the approval before sending the next tx.
+                time.sleep(3)
         return last_hash
 
     # ── Step encoding ─────────────────────────────────────────────────────────
