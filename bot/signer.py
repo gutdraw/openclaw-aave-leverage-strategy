@@ -114,6 +114,15 @@ class Signer:
         result   = self.w3.eth.call({"to": token, "data": "0x" + (selector + encoded).hex()})
         return int(abi_decode(["uint256"], result)[0])
 
+    def _aave_borrow_allowance(self, debt_token: str, from_user: str, to_user: str) -> int:
+        """borrowAllowance(fromUser, toUser) for Aave v3 variable debt tokens.
+        Debt tokens do NOT implement ERC20 allowance — they use borrowAllowance instead."""
+        selector = Web3.keccak(text="borrowAllowance(address,address)")[:4]
+        from eth_abi import encode as abi_encode, decode as abi_decode
+        encoded  = abi_encode(["address", "address"], [from_user, to_user])
+        result   = self.w3.eth.call({"to": debt_token, "data": "0x" + (selector + encoded).hex()})
+        return int(abi_decode(["uint256"], result)[0])
+
     def _should_skip_approval(self, step: dict) -> bool:
         """
         Return True if this approve / approveDelegation step can be skipped
@@ -131,7 +140,17 @@ class Signer:
 
         spender = args[0]
         amount  = self._coerce_arg("uint256", args[1])
-        current = self._erc20_allowance(contract, self.address, spender)
+
+        try:
+            if fn_name == "approveDelegation":
+                # Aave v3 debt tokens use borrowAllowance(), not ERC20 allowance()
+                current = self._aave_borrow_allowance(contract, self.address, spender)
+            else:
+                current = self._erc20_allowance(contract, self.address, spender)
+        except Exception as exc:
+            log.warning("allowance check failed for %s on %s: %s — sending tx anyway", fn_name, contract, exc)
+            return False
+
         if current >= amount:
             log.info(
                 "%s already sufficient (have=%d need=%d) on %s — skipping",
