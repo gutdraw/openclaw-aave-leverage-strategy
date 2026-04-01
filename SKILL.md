@@ -1,7 +1,7 @@
 ---
 name: aave-leverage-strategy
 description: Autonomous trend-following strategy for Aave v3 leverage on Base. Runs on a cron schedule, researches market conditions, sizes positions by signal confidence, and tracks P&L in a persistent log. Paper trading by default.
-version: 1.1.2
+version: 1.2.2
 author: gutdraw
 tags: [defi, aave, leverage, base, crypto, trading, autonomous, strategy, paper-trading]
 requires_skill: aave-leverage

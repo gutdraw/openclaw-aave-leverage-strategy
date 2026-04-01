@@ -1,5 +1,41 @@
 # Changelog
 
+## [1.2.2] — 2026-04-01
+
+### Fixed — Live trading bugs (first live cbBTC long)
+
+- **Direction-specific TP/SL wired** (`main.py`): `compute_unrealised` was using shared
+  `take_profit_pct` / `stop_loss_pct` instead of the direction-specific `tp_for()` /
+  `sl_for()` helpers added in 1.2.1. Now correctly uses per-direction overrides.
+- **Double swap on long open removed** (`executor.py`): `open_position` and
+  `increase_position` were calling `mcp.swap(USDC→asset)` internally, duplicating the
+  pre-swap already done by `_ensure_wallet_token` in `main.py`. Removed from executor —
+  `_ensure_wallet_token` is the single swap path for live longs.
+- **Swap tx revert detection** (`signer.py`): `wait_for_receipt` now raises
+  `RuntimeError` when the mined tx has `status == 0`. Previously it returned silently on
+  reverts, allowing subsequent steps to proceed with a broken state.
+- **Wallet shortfall logic** (`main.py._ensure_wallet_token`): previous logic required
+  either cbBTC or USDC alone to cover the full seed. Fixed to compute the shortfall
+  (`supply_needed_usd − existing_asset_usd`) and swap only that delta from USDC —
+  avoids skipping valid opens when wallet holds partial asset + partial USDC.
+- **RPC propagation delay after swap** (`main.py`): added `time.sleep(3)` after
+  `wait_for_receipt` for pre-open swaps so the MCP server's RPC node sees the confirmed
+  balance before `prepare_open` runs its balance pre-check.
+- **`size.supply` cap to wallet balance** (`main.py`): when `_ensure_wallet_token`
+  returns True (no swap needed), CoinGecko price vs Uniswap execution price can differ
+  by a tiny fraction, causing `size.supply` to exceed the actual wallet balance by
+  ~0.000002 cbBTC. Cap `size.supply` to `actual_wallet_balance` before calling
+  `prepare_open` to prevent the MCP balance check from rejecting the order.
+- **`approveDelegation` skip check fixed** (`signer.py`): `_should_skip_approval` was
+  calling ERC20 `allowance(address,address)` on Aave v3 variable debt tokens, which
+  revert with `ContractCustomError 0x29a270f5` because they implement
+  `borrowAllowance(fromUser,toUser)` instead. Fixed to use the correct function per step
+  type. Added `try/except` so a failed check falls through to sending the tx.
+- **Base sequencer 3s pause after approvals** (`signer.py`): added `time.sleep(3)` after
+  each mined `approve` / `approveDelegation` tx. Base enforces a 1-in-flight-tx limit
+  for delegated accounts — without the pause, the main `openPosition` tx is rejected
+  with `in-flight transaction limit reached`.
+
 ## [1.2.1] — 2026-03-29
 
 ### Added — Direction-specific leverage

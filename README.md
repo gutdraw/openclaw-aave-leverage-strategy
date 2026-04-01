@@ -42,8 +42,9 @@ Copy `mcp-config.json` into your `openclaw.json`:
   "mcpServers": {
     "aave-leverage": {
       "url": "https://aave-leverage-agent-production.up.railway.app/mcp",
+      "transport": "http",
       "headers": {
-        "X-Wallet-Address": "0xYOUR_WALLET_ADDRESS"
+        "Authorization": "Bearer YOUR_SESSION_TOKEN"
       }
     }
   }

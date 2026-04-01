@@ -169,7 +169,9 @@ For minimal resource use, run one cycle per hour via cron:
 |---|---|---|
 | `paper_trading` | `true` | Dry-run mode — no real transactions |
 | `asset` | `WETH` | Asset to trade: `WETH`, `cbBTC`, `wstETH` |
-| `leverage` | `3.0` | Target leverage for new long positions |
+| `leverage` | `3.0` | Target leverage (shared default for both directions) |
+| `long_leverage` | `0.0` | Override leverage for longs only. `0` = use `leverage`. |
+| `short_leverage` | `0.0` | Override leverage for shorts only. `0` = use `leverage`, capped at `short_max_leverage`. |
 | `max_leverage` | `4.0` | Hard cap for longs — server also enforces |
 | `short_max_leverage` | `2.0` | Hard cap for shorts. 3x short HF ≈1.04 (near liquidation). |
 | `base_position_pct` | `0.20` | Fraction of total collateral used as seed |
@@ -180,11 +182,16 @@ For minimal resource use, run one cycle per hour via cron:
 
 | Field | Default | Description |
 |---|---|---|
-| `take_profit_pct` | `5.0` | Close when up this % from entry |
-| `stop_loss_pct` | `3.0` | Close when down this % from entry |
+| `take_profit_pct` | `5.0` | Close when up this % from entry (shared default) |
+| `long_take_profit_pct` | `0.0` | Override TP for longs only. `0` = use `take_profit_pct`. |
+| `short_take_profit_pct` | `0.0` | Override TP for shorts only. `0` = use `take_profit_pct`. |
+| `stop_loss_pct` | `3.0` | Close when down this % from entry (shared default) |
+| `long_stop_loss_pct` | `0.0` | Override SL for longs only. `0` = use `stop_loss_pct`. |
+| `short_stop_loss_pct` | `0.0` | Override SL for shorts only. `0` = use `stop_loss_pct`. |
 | `tp_on_strong_signal` | `false` | When false: skip TP if signal still at max strength. SL always applies. |
+| `post_tp_gate_hours` | `48.0` | After a TP close, block same-direction reopens for this many hours unless signal is at max strength. `0` = never expire gate. |
 | `signal_reversal_exit` | `true` | Close when trend flips against position |
-| `signal_reversal_min_score` | `0` | Min reversal score: 0=strong only, 1=moderate+, 2=any |
+| `signal_reversal_min_score` | `1` | Min reversal score: 0=strong only, 1=moderate+, 2=any |
 | `min_hold_hours` | `2.0` | Minimum hours before signal reversal can trigger |
 | `max_hold_days` | `14.0` | Force-close after N days to avoid carry drag. 0 = disabled. |
 
@@ -199,6 +206,7 @@ For minimal resource use, run one cycle per hour via cron:
 | `max_funding_rate_short` | `0.05` | Skip shorts if perp funding < -this % per 8h (crowded shorts) |
 | `max_fear_greed_long` | `85` | Skip longs if Fear & Greed ≥ this (extreme greed) |
 | `min_fear_greed_short` | `15` | Skip shorts if Fear & Greed ≤ this (extreme fear) |
+| `fear_greed_short_rsi_floor` | `35.0` | F&G short block lifts once RSI rises above this — prevents blocking shorts during sustained downtrends after an oversold bounce |
 | `min_volume_24h_usd` | `0` | Skip new entries if 24h spot volume < this USD. 0 = disabled. |
 | `max_usdc_utilization` | `0.92` | Skip new entries if Aave USDC pool utilization > this |
 | `max_recent_liquidations` | `3` | Skip new entries if this many LiquidationCall events in lookback window |
