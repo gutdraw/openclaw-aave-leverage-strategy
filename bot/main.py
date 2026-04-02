@@ -86,7 +86,7 @@ def _inject_swap_approve(resp: dict) -> dict:
         "contract": token_in,
         "abi_fn":   "approve(address,uint256)",
         "args":     [_SWAP_ROUTER, _UINT256_MAX],
-        "gas":      60_000,
+        "gas":      100_000,
     }
     resp["transaction_steps"] = [approve_step] + steps
     return resp
