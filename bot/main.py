@@ -331,12 +331,12 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
         "recent_liquidations": data.recent_liquidations,
         "usdc_supply_apy": data.usdc_supply_apy,
         "asset_borrow_apy": data.asset_borrow_apy,
-        # Flash-loan loop creates supply=(lev+1)×seed USDC, borrow=lev×seed asset.
-        # carry = usdc_supply_apy × (lev+1) − asset_borrow_apy × lev
+        # Flash-loan loop creates supply=lev×seed USDC, borrow=(lev−1)×seed asset.
+        # carry = usdc_supply_apy × lev − asset_borrow_apy × (lev−1)
         "short_carry_apr": (
             round(
-                data.usdc_supply_apy * (cfg.leverage_for("short") + 1)
-                - data.asset_borrow_apy * cfg.leverage_for("short"),
+                data.usdc_supply_apy * cfg.leverage_for("short")
+                - data.asset_borrow_apy * (cfg.leverage_for("short") - 1),
                 4,
             )
             if data.usdc_supply_apy is not None and data.asset_borrow_apy is not None
