@@ -64,12 +64,17 @@ def _inject_swap_approve(resp: dict) -> dict:
     if swap_step.get("use_eth"):
         return resp
 
-    has_approve = any(
-        s.get("type") == "approve"
-        and s.get("args", [None])[0]
-        and s["args"][0].lower() == _SWAP_ROUTER.lower()
-        for s in steps
-    )
+    has_approve = False
+    for s in steps:
+        if (
+            s.get("type") == "approve"
+            and s.get("args", [None])[0]
+            and s["args"][0].lower() == _SWAP_ROUTER.lower()
+        ):
+            has_approve = True
+            # Ensure the gas limit is sufficient for proxy tokens like cbBTC
+            if s.get("gas", 0) < 100_000:
+                s["gas"] = 100_000
     if has_approve:
         return resp
 
