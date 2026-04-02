@@ -41,6 +41,56 @@ from bot.mcp_client import MCPClient
 
 log = logging.getLogger(__name__)
 
+# Uniswap V3 SwapRouter02 on Base — used for client-side approve injection
+_SWAP_ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481"
+_UINT256_MAX = str(2**256 - 1)
+
+
+def _inject_swap_approve(resp: dict) -> dict:
+    """Ensure an MCP swap response includes an ERC20 approve step.
+
+    If the server already returns an approve step targeting the swap router,
+    this is a no-op.  Otherwise it prepends one so *execute_steps* can check
+    the on-chain allowance and send the approval when needed.
+    """
+    steps = resp.get("transaction_steps", [])
+    if not steps:
+        return resp
+
+    swap_step = next((s for s in steps if s.get("type") == "swap"), None)
+    if swap_step is None:
+        return resp
+    # Native ETH swaps don't need approval
+    if swap_step.get("use_eth"):
+        return resp
+
+    has_approve = any(
+        s.get("type") == "approve"
+        and s.get("args", [None])[0]
+        and s["args"][0].lower() == _SWAP_ROUTER.lower()
+        for s in steps
+    )
+    if has_approve:
+        return resp
+
+    # Derive tokenIn address from the swap step args (first element of the tuple)
+    swap_args = swap_step.get("args", [[]])
+    token_in = swap_args[0][0] if swap_args and isinstance(swap_args[0], list) and swap_args[0] else None
+    if not token_in:
+        return resp
+
+    approve_step = {
+        "step":     0,
+        "title":    "Approve token for Swap",
+        "type":     "approve",
+        "contract": token_in,
+        "abi_fn":   "approve(address,uint256)",
+        "args":     [_SWAP_ROUTER, _UINT256_MAX],
+        "gas":      60_000,
+    }
+    resp["transaction_steps"] = [approve_step] + steps
+    return resp
+
 
 # Aave v3 Base liquidation thresholds per supply asset (basis: on-chain reserve config)
 _LIQ_THRESHOLD: dict[str, float] = {
@@ -154,7 +204,7 @@ def _ensure_wallet_token(
                     "Swapping %.6f %s → USDC (seed=%.2f, preserving USDC reserve)",
                     swap_qty, tok, seed_usd,
                 )
-                swap_hash = signer.execute_steps(mcp.swap(tok, "USDC", swap_qty))
+                swap_hash = signer.execute_steps(_inject_swap_approve(mcp.swap(tok, "USDC", swap_qty)))
                 cycle_entry["pre_swap"] = f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
                 log.info("waiting for swap confirmation: %s", swap_hash)
                 signer.wait_for_receipt(swap_hash)
@@ -192,7 +242,7 @@ def _ensure_wallet_token(
                 "Swapping %.2f USDC → %s (have %.2f USD of asset, need %.2f, topping up shortfall)",
                 swap_usd, cfg.asset, asset_val_usd, supply_needed_usd,
             )
-            swap_hash = signer.execute_steps(mcp.swap("USDC", cfg.asset, swap_usd))
+            swap_hash = signer.execute_steps(_inject_swap_approve(mcp.swap("USDC", cfg.asset, swap_usd)))
             cycle_entry["pre_swap"] = f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
             log.info("waiting for swap confirmation: %s", swap_hash)
             signer.wait_for_receipt(swap_hash)
