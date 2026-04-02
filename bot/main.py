@@ -203,10 +203,11 @@ def _ensure_wallet_token(
             tok_bal = float(wb.get(tok, 0) or 0)
             tok_val_usd = tok_bal * data.price
             if tok_val_usd >= seed_usd * 0.95:
-                # Enough asset to cover the full seed — swap it, preserve USDC
-                swap_qty = min(seed_usd / data.price * _SLIPPAGE, tok_bal)
+                # Swap ALL the asset to USDC — a short means we want zero
+                # long exposure in the wallet, not just enough for the seed.
+                swap_qty = tok_bal
                 log.info(
-                    "Swapping %.6f %s → USDC (seed=%.2f, preserving USDC reserve)",
+                    "Swapping %.6f %s → USDC (all, seed=%.2f, eliminating long exposure)",
                     swap_qty, tok, seed_usd,
                 )
                 swap_hash = signer.execute_steps(_inject_swap_approve(mcp.swap(tok, "USDC", swap_qty)))
