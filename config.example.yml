@@ -34,13 +34,19 @@ private_key: ""                # live mode only — prefer env var PRIVATE_KEY, 
 # POSITION SIZING
 # seed_usd = wallet_balance_usd x base_position_pct x signal_multiplier
 # ---------------------------------------------------------------
-# LEVERAGE SEMANTICS: balance-sheet leverage, NOT BTC price exposure.
-# BTC exposure = leverage - 1. To get Nx BTC sensitivity set leverage = N+1.
-#   long_leverage: 3  → 3x balance-sheet → 2x BTC long exposure
-#   short_leverage: 3 → 3x balance-sheet → 2x BTC short exposure
+# LEVERAGE SEMANTICS: balance-sheet leverage (total_assets / equity).
+# The seed token drives the difference between longs and shorts:
+#
+#   LONG  seed = cbBTC → BTC exposure = leverage (seed IS BTC)
+#     long_leverage: 3  → supply 3×seed cbBTC, borrow 2×seed USDC → 3x BTC long exposure
+#     Rule: want Nx long exposure → set long_leverage = N
+#
+#   SHORT seed = USDC  → BTC exposure = leverage - 1 (seed is NOT BTC)
+#     short_leverage: 3 → supply 3×seed USDC, borrow 2×seed cbBTC → 2x BTC short exposure
+#     Rule: want Nx short exposure → set short_leverage = N+1
 leverage: 3.0               # default balance-sheet leverage for both directions
-long_leverage: 3.0          # override for longs  (3x balance-sheet = 2x BTC long exposure)
-short_leverage: 3.0         # override for shorts (3x balance-sheet = 2x BTC short exposure)
+long_leverage: 3.0          # 3x balance-sheet = 3x BTC long exposure (seed is BTC)
+short_leverage: 3.0         # 3x balance-sheet = 2x BTC short exposure (seed is USDC)
 max_leverage: 4.0
 base_position_pct: 0.20     # use 20% of wallet collateral balance as base seed
 strong_signal_size: 1.0     # multiplier for strong signal (all 3 timeframes aligned)

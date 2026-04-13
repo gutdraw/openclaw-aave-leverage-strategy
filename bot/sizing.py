@@ -5,27 +5,28 @@ Position size calculator.
 LEVERAGE SEMANTICS — READ THIS CAREFULLY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-"leverage" here means BALANCE-SHEET leverage = total_assets / equity.
-BTC price EXPOSURE (delta) = leverage - 1.
+"leverage" = BALANCE-SHEET leverage = total_assets / equity.
 
-  long_leverage=3  → supply 3×seed asset,  borrow 2×seed USDC  → 2x BTC long exposure
-  short_leverage=3 → supply 3×seed USDC,   borrow 2×seed asset → 2x BTC short exposure
+The seed token is the key difference between longs and shorts:
 
-So to achieve Nx BTC price exposure, set leverage = N+1.
+  LONG  — seed is BTC (cbBTC). BTC exposure = leverage (same as balance-sheet).
+    long_leverage=3 → supply 3×seed cbBTC, borrow 2×seed USDC → 3x BTC exposure
+    Rule: want Nx long exposure → set long_leverage = N
 
-Example (short):
-  short_leverage=3, seed=$50 USDC, BTC=$70,000
-  On-chain supply  = 3 × $50  = $150 USDC  (balance-sheet asset)
-  On-chain borrow  = 2 × $50  = $100 → 100/70000 = 0.00143 cbBTC
-  Equity           = $150 − $100 = $50
-  BTC exposure     = $100 / $50 = 2x  ← what matters for P&L
+  SHORT — seed is USDC. BTC exposure = leverage - 1 (seed is NOT BTC).
+    short_leverage=3 → supply 3×seed USDC, borrow 2×seed cbBTC → 2x BTC short exposure
+    Rule: want Nx short exposure → set short_leverage = N+1
+
+Examples at BTC=$70,000, seed=$50:
+  long_leverage=3:  supply 0.00214 cbBTC, borrow $100 USDC → 3x BTC long exposure
+  short_leverage=3: supply $150 USDC, borrow 0.00143 cbBTC → 2x BTC short exposure
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Long:
   seed_usd = total_collateral_usd * base_position_pct * signal_multiplier
-  supply   = seed_usd / price          (asset units supplied to Aave)
-  borrow   = supply * (leverage - 1)   (USDC borrowed; BTC exposure = leverage-1)
+  supply   = seed_usd / price          (cbBTC units supplied to Aave)
+  borrow   = supply * (leverage - 1)   (USDC borrowed; BTC long exposure = leverage)
 
 Short (flash-loan loop: supply lev×seed USDC to Aave, borrow (lev-1)×seed asset):
   seed_usd = same formula
