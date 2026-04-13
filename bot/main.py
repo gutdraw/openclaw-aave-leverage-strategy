@@ -783,6 +783,42 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
             size.borrow,
         )
         res = executor.open_position(size, sig.direction, new_pos_id, cfg, mcp, signer)
+
+        # Reconcile logged supply/borrow against on-chain actuals.
+        # The MCP vault may adjust the seed (e.g. gas rounding, existing Aave balance)
+        # so the computed size.supply/borrow can diverge from what was actually opened.
+        actual_supply = size.supply
+        actual_borrow = size.borrow
+        if not cfg.paper_trading:
+            try:
+                pos = mcp.get_position()
+                aave_pos = (pos.get("aavePositions") or {}).get("positions") or []
+                if aave_pos:
+                    p = aave_pos[0]
+                    if sig.direction == "short":
+                        actual_supply = float(p.get("aTokenBalance", size.supply))
+                        actual_borrow = float(p.get("variableDebt", size.borrow))
+                    else:
+                        actual_supply = float(p.get("aTokenBalance", size.supply))
+                        actual_borrow = float(p.get("variableDebt", size.borrow))
+                    if abs(actual_supply - size.supply) / max(size.supply, 1e-9) > 0.01:
+                        log.info(
+                            "on-chain supply %.6f differs from computed %.6f — using on-chain",
+                            actual_supply,
+                            size.supply,
+                        )
+                    if abs(actual_borrow - size.borrow) / max(size.borrow, 1e-9) > 0.01:
+                        log.info(
+                            "on-chain borrow %.6f differs from computed %.6f — using on-chain",
+                            actual_borrow,
+                            size.borrow,
+                        )
+            except Exception as e:
+                log.warning(
+                    "post-open on-chain reconciliation failed — using computed values: %s",
+                    e,
+                )
+
         trade_entry = {
             "type": "trade",
             "action": "open",
@@ -792,8 +828,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
             "position_id": new_pos_id,
             "signal": sig.label,
             "entry_price": data.price,
-            "supply": size.supply,
-            "borrow": size.borrow,
+            "supply": actual_supply,
+            "borrow": actual_borrow,
             "seed_usd": size.seed_usd,
             "leverage": cfg.leverage_for(sig.direction),
             "paper": cfg.paper_trading,
