@@ -1,16 +1,40 @@
 """
 Position size calculator.
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LEVERAGE SEMANTICS — READ THIS CAREFULLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+"leverage" here means BALANCE-SHEET leverage = total_assets / equity.
+BTC price EXPOSURE (delta) = leverage - 1.
+
+  long_leverage=3  → supply 3×seed asset,  borrow 2×seed USDC  → 2x BTC long exposure
+  short_leverage=3 → supply 3×seed USDC,   borrow 2×seed asset → 2x BTC short exposure
+
+So to achieve Nx BTC price exposure, set leverage = N+1.
+
+Example (short):
+  short_leverage=3, seed=$50 USDC, BTC=$70,000
+  On-chain supply  = 3 × $50  = $150 USDC  (balance-sheet asset)
+  On-chain borrow  = 2 × $50  = $100 → 100/70000 = 0.00143 cbBTC
+  Equity           = $150 − $100 = $50
+  BTC exposure     = $100 / $50 = 2x  ← what matters for P&L
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 Long:
   seed_usd = total_collateral_usd * base_position_pct * signal_multiplier
-  supply   = seed_usd / price          (asset units, e.g. ETH)
-  borrow   = supply * (leverage - 1)   (asset-denominated USDC debt)
+  supply   = seed_usd / price          (asset units supplied to Aave)
+  borrow   = supply * (leverage - 1)   (USDC borrowed; BTC exposure = leverage-1)
 
-Short (MCP flash-loan loop creates supply=(lev+1)×seed USDC, borrow=lev×seed asset):
+Short (flash-loan loop: supply lev×seed USDC to Aave, borrow (lev-1)×seed asset):
   seed_usd = same formula
-  supply   = seed_usd                  (USDC seed passed to MCP; loop creates (lev+1)×seed on-chain)
-  borrow   = seed_usd * leverage / price  (lev×seed in asset units — true Aave debt after loop)
+  supply   = seed_usd                  (USDC seed; vault flash-loops to lev×seed on-chain)
+  borrow   = seed_usd * (leverage-1) / price  (true Aave variableDebt in asset units)
+             NOTE: previously computed as lev/price (off by 1); on-chain reconciliation
+             now overwrites this with the actual variableDebt after open.
 """
+
 from dataclasses import dataclass
 
 from bot.config import BotConfig
@@ -19,9 +43,9 @@ from bot.signal import Signal
 
 @dataclass
 class PositionSize:
-    seed_usd: float     # collateral contribution in USD
-    supply: float       # long: asset units; short: USDC units
-    borrow: float       # long: USDC amount; short: asset units being shorted
+    seed_usd: float  # collateral contribution in USD
+    supply: float  # long: asset units; short: USDC units
+    borrow: float  # long: USDC amount; short: asset units being shorted
 
 
 def compute(
@@ -47,11 +71,11 @@ def compute(
 
     lev = cfg.leverage_for(signal.direction)
     if signal.direction == "short":
-        supply = seed_usd                          # USDC seed passed to MCP
-        borrow = seed_usd * lev / price            # lev×seed in asset units (true Aave debt)
+        supply = seed_usd  # USDC seed passed to MCP
+        borrow = seed_usd * lev / price  # lev×seed in asset units (true Aave debt)
     else:
-        supply = seed_usd / price                  # asset units (e.g. ETH)
-        borrow = supply * (lev - 1)               # USDC to borrow
+        supply = seed_usd / price  # asset units (e.g. ETH)
+        borrow = supply * (lev - 1)  # USDC to borrow
 
     return PositionSize(seed_usd=seed_usd, supply=supply, borrow=borrow)
 
