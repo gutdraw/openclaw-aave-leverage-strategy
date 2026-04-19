@@ -25,6 +25,7 @@ Architecture (Base mainnet):
   LeverageRouterV3  (0x4A60C1E7d78DA2A61007fE21d282a859D3906724) — caller
   LeverageVaultV3   (0xf2A51d441E6bA96c37fD0024115DccF03764478f) — approve target
 """
+
 from __future__ import annotations
 
 import logging
@@ -51,12 +52,12 @@ def _split_sig_types(sig: str) -> list[str]:
           → ["address", "address", "uint24"]
     """
     start = sig.index("(") + 1
-    end   = sig.rindex(")")
+    end = sig.rindex(")")
     inner = sig[start:end]
     if not inner:
         return []
     types: list[str] = []
-    depth   = 0
+    depth = 0
     current = ""
     for ch in inner:
         if ch == "(":
@@ -77,7 +78,7 @@ def _split_sig_types(sig: str) -> list[str]:
 
 class Signer:
     def __init__(self, rpc_url: str, private_key: str) -> None:
-        self.w3      = Web3(Web3.HTTPProvider(rpc_url))
+        self.w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
         self.account = Account.from_key(private_key)
         self._nonce: int | None = None
 
@@ -111,17 +112,25 @@ class Signer:
         """allowance(owner, spender) via raw eth_call — no ABI file needed."""
         selector = Web3.keccak(text="allowance(address,address)")[:4]
         from eth_abi import encode as abi_encode, decode as abi_decode
-        encoded  = abi_encode(["address", "address"], [owner, spender])
-        result   = self.w3.eth.call({"to": token, "data": "0x" + (selector + encoded).hex()})
+
+        encoded = abi_encode(["address", "address"], [owner, spender])
+        result = self.w3.eth.call(
+            {"to": token, "data": "0x" + (selector + encoded).hex()}
+        )
         return int(abi_decode(["uint256"], result)[0])
 
-    def _aave_borrow_allowance(self, debt_token: str, from_user: str, to_user: str) -> int:
+    def _aave_borrow_allowance(
+        self, debt_token: str, from_user: str, to_user: str
+    ) -> int:
         """borrowAllowance(fromUser, toUser) for Aave v3 variable debt tokens.
         Debt tokens do NOT implement ERC20 allowance — they use borrowAllowance instead."""
         selector = Web3.keccak(text="borrowAllowance(address,address)")[:4]
         from eth_abi import encode as abi_encode, decode as abi_decode
-        encoded  = abi_encode(["address", "address"], [from_user, to_user])
-        result   = self.w3.eth.call({"to": debt_token, "data": "0x" + (selector + encoded).hex()})
+
+        encoded = abi_encode(["address", "address"], [from_user, to_user])
+        result = self.w3.eth.call(
+            {"to": debt_token, "data": "0x" + (selector + encoded).hex()}
+        )
         return int(abi_decode(["uint256"], result)[0])
 
     def _should_skip_approval(self, step: dict) -> bool:
@@ -131,16 +140,16 @@ class Signer:
         Skipping avoids an extra in-flight tx which hits Base sequencer limits
         on accounts that have Aave credit delegation.
         """
-        fn_sig   = step.get("abi_fn", "")
-        fn_name  = fn_sig.split("(")[0]
-        args     = step.get("args", [])
+        fn_sig = step.get("abi_fn", "")
+        fn_name = fn_sig.split("(")[0]
+        args = step.get("args", [])
         contract = step.get("contract", "")
 
         if fn_name not in ("approve", "approveDelegation") or len(args) < 2:
             return False
 
         spender = args[0]
-        amount  = self._coerce_arg("uint256", args[1])
+        amount = self._coerce_arg("uint256", args[1])
 
         try:
             if fn_name == "approveDelegation":
@@ -149,13 +158,21 @@ class Signer:
             else:
                 current = self._erc20_allowance(contract, self.address, spender)
         except Exception as exc:
-            log.warning("allowance check failed for %s on %s: %s — sending tx anyway", fn_name, contract, exc)
+            log.warning(
+                "allowance check failed for %s on %s: %s — sending tx anyway",
+                fn_name,
+                contract,
+                exc,
+            )
             return False
 
         if current >= amount:
             log.info(
                 "%s already sufficient (have=%d need=%d) on %s — skipping",
-                fn_name, current, amount, contract,
+                fn_name,
+                current,
+                amount,
+                contract,
             )
             return True
         return False
@@ -193,7 +210,9 @@ class Signer:
                 self.reset_nonce()
                 raise
             fn_name = step.get("abi_fn", "").split("(")[0]
-            log.info("tx %s sent (%s)", last_hash, step.get("title", step.get("type", "?")))
+            log.info(
+                "tx %s sent (%s)", last_hash, step.get("title", step.get("type", "?"))
+            )
             self.wait_for_receipt(last_hash)
             if fn_name in ("approve", "approveDelegation"):
                 # Base sequencer tracks "delegated accounts" with a 1-in-flight limit.
@@ -220,9 +239,7 @@ class Signer:
             # Tuple/struct — parse sub-types and coerce each element recursively
             sub_types = _split_sig_types(t)
             if isinstance(value, (list, tuple)):
-                return tuple(
-                    self._coerce_arg(st, v) for st, v in zip(sub_types, value)
-                )
+                return tuple(self._coerce_arg(st, v) for st, v in zip(sub_types, value))
             return value
         elif t == "address":
             return Web3.to_checksum_address(value) if isinstance(value, str) else value
@@ -256,25 +273,31 @@ class Signer:
             return step
 
         contract = step.get("contract")
-        gas      = step.get("gas", 500_000)
-        value    = int(step.get("eth_value") or step.get("value") or 0)
+        gas = step.get("gas", 500_000)
+        value = int(step.get("eth_value") or step.get("value") or 0)
 
         if "calldata" in step and isinstance(step["calldata"], str):
-            return {"to": contract, "data": step["calldata"], "value": value, "gas": gas}
+            return {
+                "to": contract,
+                "data": step["calldata"],
+                "value": value,
+                "gas": gas,
+            }
 
-        fn_sig   = step.get("abi_fn", "")
+        fn_sig = step.get("abi_fn", "")
         args_raw = step.get("args", [])
-        types    = _split_sig_types(fn_sig)
+        types = _split_sig_types(fn_sig)
 
         if types:
             from eth_abi import encode as abi_encode
-            coerced      = [self._coerce_arg(t, a) for t, a in zip(types, args_raw)]
-            selector     = Web3.keccak(text=fn_sig)[:4]
+
+            coerced = [self._coerce_arg(t, a) for t, a in zip(types, args_raw)]
+            selector = Web3.keccak(text=fn_sig)[:4]
             encoded_args = abi_encode(types, coerced)
-            data         = "0x" + (selector + encoded_args).hex()
+            data = "0x" + (selector + encoded_args).hex()
         else:
             selector = Web3.keccak(text=fn_sig)[:4]
-            data     = "0x" + selector.hex()
+            data = "0x" + selector.hex()
 
         return {"to": contract, "data": data, "value": value, "gas": gas}
 
@@ -295,13 +318,15 @@ class Signer:
             )
 
         if "maxFeePerGas" not in tx and "gasPrice" not in tx:
-            latest   = self.w3.eth.get_block("latest")
+            latest = self.w3.eth.get_block("latest")
             base_fee = latest.get("baseFeePerGas", self.w3.to_wei(0.1, "gwei"))
-            priority = self.w3.to_wei(0.005, "gwei")  # 0.005 gwei tip — sufficient on Base (base fee ~0.001 gwei)
+            priority = self.w3.to_wei(
+                0.005, "gwei"
+            )  # 0.005 gwei tip — sufficient on Base (base fee ~0.001 gwei)
             tx["maxPriorityFeePerGas"] = priority
-            tx["maxFeePerGas"]         = base_fee * 2 + priority
+            tx["maxFeePerGas"] = base_fee * 2 + priority
 
-        signed  = self.account.sign_transaction(tx)
+        signed = self.account.sign_transaction(tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         return tx_hash.hex()
 
