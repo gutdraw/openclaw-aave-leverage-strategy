@@ -127,6 +127,20 @@ max_usdc_utilization: 0.92           # e.g. 0.92 = 92% — near the rate kink
 max_recent_liquidations: 3
 
 # ---------------------------------------------------------------
+# LIQUIDITY ESCAPE
+# Proactively close an open position when the flash-loan asset's pool
+# is running out of liquidity — before we get trapped and can't close.
+#
+# For longs (flash loan = USDC): watches usdc_utilization.
+# For shorts (flash loan = borrow asset, e.g. cbBTC): watches asset_utilization.
+#
+# Also triggers on reserve freeze/pause (Aave governance action blocking
+# new borrows or all operations on the asset — e.g. KelpDAO-style events).
+# ---------------------------------------------------------------
+liquidity_escape_utilization: 0.95   # exit if flash-asset pool > 95% utilized
+liquidity_escape_velocity: 0.05      # exit if utilization jumped > 5pp in one cycle
+
+# ---------------------------------------------------------------
 # RISK GUARDRAILS
 # These trigger defensive actions on an open position.
 # ---------------------------------------------------------------

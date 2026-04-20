@@ -454,6 +454,98 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
             state.append_entry(cfg.trades_file, cycle_entry)
             return cycle_entry
 
+    # ── 4a. Liquidity escape ──────────────────────────────────────────────
+    # Close an open position proactively when pool liquidity is drying up.
+    # We rely on flash loans to close — if the flash-loan asset's pool hits
+    # 100% utilization we can't close at all. Exit well before that point.
+    #
+    # For longs  (flash USDC):       watch usdc_utilization
+    # For shorts (flash borrow asset): watch asset_utilization
+    #
+    # Also close immediately on Aave governance freeze/pause of any involved
+    # asset (e.g. KelpDAO-style incident).
+    if open_trade is not None and not cfg.paper_trading:
+        prev_usdc_util, prev_asset_util = get_last_utilizations(entries)
+
+        if open_direction == "long":
+            flash_util = data.usdc_utilization
+            prev_flash_util = prev_usdc_util
+            flash_frozen = data.borrow_asset_frozen  # USDC frozen → no flash loan
+            flash_paused = data.borrow_asset_paused  # USDC paused → nothing works
+            supply_paused = data.asset_paused  # supply asset paused → can't withdraw
+        else:
+            flash_util = data.asset_utilization
+            prev_flash_util = prev_asset_util
+            flash_frozen = data.asset_frozen  # cbBTC frozen → no flash loan
+            flash_paused = data.asset_paused  # cbBTC paused → nothing works
+            supply_paused = data.borrow_asset_paused  # USDC paused → can't withdraw
+
+        escape_reason: Optional[str] = None
+
+        if flash_paused or supply_paused:
+            escape_reason = "liquidity_escape_paused"
+            log.critical(
+                "EMERGENCY: asset paused on Aave (flash_paused=%s supply_paused=%s) "
+                "— closing %s position immediately",
+                flash_paused,
+                supply_paused,
+                open_direction,
+            )
+        elif flash_frozen:
+            escape_reason = "liquidity_escape_frozen"
+            log.warning(
+                "Flash-loan asset frozen on Aave — closing %s position immediately",
+                open_direction,
+            )
+        elif flash_util is not None and flash_util > cfg.liquidity_escape_utilization:
+            escape_reason = "liquidity_escape_utilization"
+            log.warning(
+                "Flash-asset pool utilization %.1f%% > %.1f%% threshold "
+                "— closing %s position before liquidity dries up",
+                flash_util * 100,
+                cfg.liquidity_escape_utilization * 100,
+                open_direction,
+            )
+        elif (
+            flash_util is not None
+            and prev_flash_util is not None
+            and (flash_util - prev_flash_util) > cfg.liquidity_escape_velocity
+        ):
+            escape_reason = "liquidity_escape_velocity"
+            log.warning(
+                "Flash-asset pool utilization jumped %.1f→%.1f%% (delta=%.1f%%) "
+                "in one cycle — closing %s position before cascade",
+                prev_flash_util * 100,
+                flash_util * 100,
+                (flash_util - prev_flash_util) * 100,
+                open_direction,
+            )
+
+        if escape_reason:
+            res = executor.close_position(
+                pos_id,
+                open_direction,
+                float(open_trade.get("supply", 0)),
+                cfg,
+                mcp,
+                signer,
+            )
+            trade_entry = _close_trade_entry(
+                open_trade,
+                data.price,
+                cfg,
+                escape_reason,
+                res,
+                eff_supply,
+                eff_borrow,
+                eff_entry_price,
+            )
+            state.append_entry(
+                cfg.trades_file, cycle_entry | {"decision": escape_reason}
+            )
+            state.append_entry(cfg.trades_file, trade_entry)
+            return cycle_entry
+
     # ── 5. Exit check (TP / SL) on open position ──────────────────────────
     # Runs before signal reversal — price-based stops are deterministic and
     # should always take priority over signal-based exits.

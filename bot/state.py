@@ -2,6 +2,7 @@
 Append-only JSONL trade log: read/write helpers for trades.jsonl.
 All entries are immutable once written — never update or delete lines.
 """
+
 import fcntl
 import json
 import logging
@@ -45,13 +46,16 @@ def get_open_trade(entries: list[dict]) -> Optional[dict]:
         if e.get("action") == "open":
             open_trade = e
         elif e.get("action") == "close" and open_trade is not None:
-            if (e.get("asset") == open_trade.get("asset")
-                    and e.get("direction", "long") == open_trade.get("direction", "long")):
+            if e.get("asset") == open_trade.get("asset") and e.get(
+                "direction", "long"
+            ) == open_trade.get("direction", "long"):
                 open_trade = None
     return open_trade
 
 
-def get_effective_size(open_trade: Optional[dict], entries: list[dict]) -> tuple[float, float, float]:
+def get_effective_size(
+    open_trade: Optional[dict], entries: list[dict]
+) -> tuple[float, float, float]:
     """
     Return (total_supply, total_borrow, avg_entry_price) for the open position,
     including any increases.  avg_entry_price is borrow-weighted so that P&L on
@@ -122,6 +126,23 @@ def get_last_btc_dominance(entries: list[dict]) -> Optional[float]:
         if e.get("type") == "cycle" and e.get("btc_dominance_pct") is not None:
             return float(e["btc_dominance_pct"])
     return None
+
+
+def get_last_utilizations(
+    entries: list[dict],
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (usdc_utilization, asset_utilization) from the most recent cycle entry.
+    Used to compute velocity — how fast utilization is rising between cycles."""
+    for e in reversed(entries):
+        if e.get("type") == "cycle":
+            usdc = e.get("usdc_utilization")
+            asset = e.get("asset_utilization")
+            if usdc is not None or asset is not None:
+                return (
+                    float(usdc) if usdc is not None else None,
+                    float(asset) if asset is not None else None,
+                )
+    return None, None
 
 
 def append_entry(path: str, entry: dict) -> None:

@@ -2,37 +2,38 @@
 Market data fetcher — pulls from 3 independent sources.
 Requires at least 2 to succeed, otherwise raises RuntimeError("insufficient_data:...").
 """
+
 from dataclasses import dataclass
 from typing import Optional
 
 import httpx
 
 COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
-COINGECKO_GLOBAL  = "https://api.coingecko.com/api/v3/global"
-BINANCE_PREMIUM   = "https://fapi.binance.com/fapi/v1/premiumIndex"
-BYBIT_TICKERS     = "https://api.bybit.com/v5/market/tickers"
-OKX_FUNDING       = "https://www.okx.com/api/v5/public/funding-rate"
-FEAR_GREED_URL    = "https://api.alternative.me/fng/"
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+BINANCE_PREMIUM = "https://fapi.binance.com/fapi/v1/premiumIndex"
+BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
+OKX_FUNDING = "https://www.okx.com/api/v5/public/funding-rate"
+FEAR_GREED_URL = "https://api.alternative.me/fng/"
 
 ASSET_TO_CG_ID: dict[str, str] = {
-    "WETH":   "ethereum",
-    "ETH":    "ethereum",
-    "cbBTC":  "coinbase-wrapped-btc",
+    "WETH": "ethereum",
+    "ETH": "ethereum",
+    "cbBTC": "coinbase-wrapped-btc",
     "wstETH": "wrapped-steth",
 }
 
 # Map bot asset → exchange perpetual symbols for funding rate
 ASSET_TO_BINANCE: dict[str, str] = {
-    "WETH":   "ETHUSDT",
-    "ETH":    "ETHUSDT",
+    "WETH": "ETHUSDT",
+    "ETH": "ETHUSDT",
     "wstETH": "ETHUSDT",
-    "cbBTC":  "BTCUSDT",
+    "cbBTC": "BTCUSDT",
 }
 ASSET_TO_OKX: dict[str, str] = {
-    "WETH":   "ETH-USDT-SWAP",
-    "ETH":    "ETH-USDT-SWAP",
+    "WETH": "ETH-USDT-SWAP",
+    "ETH": "ETH-USDT-SWAP",
     "wstETH": "ETH-USDT-SWAP",
-    "cbBTC":  "BTC-USDT-SWAP",
+    "cbBTC": "BTC-USDT-SWAP",
 }
 
 
@@ -42,20 +43,35 @@ class MarketData:
     change_1h: float
     change_24h: float
     change_7d: float
-    borrow_apr: float             # USDC borrow APR in % (already multiplied by 100)
-    btc_dominance: float          # BTC market cap dominance %
-    health_factor: float          # current Aave HF (999 = no debt)
+    borrow_apr: float  # USDC borrow APR in % (already multiplied by 100)
+    btc_dominance: float  # BTC market cap dominance %
+    health_factor: float  # current Aave HF (999 = no debt)
     total_collateral_usd: float
-    position_data: dict           # raw get_position response
-    volume_24h: Optional[float] = None        # 24h spot volume in USD (from CoinGecko)
-    funding_rate: Optional[float] = None      # perp funding rate in % per 8h (None = unavailable)
-    fear_greed: Optional[int] = None          # Crypto Fear & Greed Index 0-100 (None = unavailable)
+    position_data: dict  # raw get_position response
+    volume_24h: Optional[float] = None  # 24h spot volume in USD (from CoinGecko)
+    funding_rate: Optional[float] = (
+        None  # perp funding rate in % per 8h (None = unavailable)
+    )
+    fear_greed: Optional[int] = (
+        None  # Crypto Fear & Greed Index 0-100 (None = unavailable)
+    )
     usdc_utilization: Optional[float] = None  # Aave v3 Base USDC pool utilization 0–1
-    asset_utilization: Optional[float] = None # Aave v3 Base supply-asset utilization 0–1
-    recent_liquidations: Optional[int] = None # LiquidationCall events in last ~5 min
-    usdc_supply_apy: Optional[float] = None   # Aave USDC supply APY % (earned on short collateral)
-    asset_borrow_apy: Optional[float] = None  # Aave asset borrow APY % (paid when short)
-    wallet_collateral_usd: float = 0.0        # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
+    asset_utilization: Optional[float] = (
+        None  # Aave v3 Base supply-asset utilization 0–1
+    )
+    recent_liquidations: Optional[int] = None  # LiquidationCall events in last ~5 min
+    # Reserve status flags — None = RPC unavailable (treated as safe/unknown)
+    asset_frozen: Optional[bool] = None  # supply asset frozen (flash loans blocked)
+    asset_paused: Optional[bool] = None  # supply asset paused (all ops blocked)
+    borrow_asset_frozen: Optional[bool] = None  # USDC frozen (long flash loan blocked)
+    borrow_asset_paused: Optional[bool] = None  # USDC paused (all ops blocked)
+    usdc_supply_apy: Optional[float] = (
+        None  # Aave USDC supply APY % (earned on short collateral)
+    )
+    asset_borrow_apy: Optional[float] = (
+        None  # Aave asset borrow APY % (paid when short)
+    )
+    wallet_collateral_usd: float = 0.0  # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
 
 
 def fetch(
@@ -85,11 +101,11 @@ def fetch(
             timeout=timeout,
         )
         r.raise_for_status()
-        coin       = r.json()[0]
-        price      = float(coin["current_price"])
-        change_1h  = float(coin.get("price_change_percentage_1h_in_currency") or 0)
+        coin = r.json()[0]
+        price = float(coin["current_price"])
+        change_1h = float(coin.get("price_change_percentage_1h_in_currency") or 0)
         change_24h = float(coin.get("price_change_percentage_24h_in_currency") or 0)
-        change_7d  = float(coin.get("price_change_percentage_7d_in_currency") or 0)
+        change_7d = float(coin.get("price_change_percentage_7d_in_currency") or 0)
         volume_24h = float(coin.get("total_volume") or 0) or None
     except Exception as e:
         sources_failed.append(f"coingecko_prices:{e}")
@@ -98,10 +114,10 @@ def fetch(
     pos: Optional[dict] = None
     borrow_apr = health_factor = total_collateral_usd = None
     try:
-        pos                  = mcp_client.get_position()
-        rates                = pos.get("reserveRates", {})
-        borrow_apr           = rates["USDC"]["borrowApy"] * 100
-        health_factor        = float(pos["aave"]["healthFactor"])
+        pos = mcp_client.get_position()
+        rates = pos.get("reserveRates", {})
+        borrow_apr = rates["USDC"]["borrowApy"] * 100
+        health_factor = float(pos["aave"]["healthFactor"])
         total_collateral_usd = float(pos["aave"]["totalCollateralUSD"])
     except Exception as e:
         sources_failed.append(f"get_position:{e}")
@@ -124,7 +140,7 @@ def fetch(
     if pos is not None:
         try:
             rates = pos.get("reserveRates", {})
-            usdc_supply_apy  = round(rates["USDC"]["supplyApy"] * 100, 4)
+            usdc_supply_apy = round(rates["USDC"]["supplyApy"] * 100, 4)
             asset_borrow_apy = round(rates[asset]["borrowApy"] * 100, 4)
         except (KeyError, TypeError):
             pass
@@ -152,7 +168,11 @@ def fetch(
     if funding_rate is None:
         try:
             symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
-            r = httpx.get(BYBIT_TICKERS, params={"category": "linear", "symbol": symbol}, timeout=timeout)
+            r = httpx.get(
+                BYBIT_TICKERS,
+                params={"category": "linear", "symbol": symbol},
+                timeout=timeout,
+            )
             r.raise_for_status()
             funding_rate = float(r.json()["result"]["list"][0]["fundingRate"]) * 100
         except Exception as e:
@@ -169,7 +189,8 @@ def fetch(
 
     # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
     from bot.onchain import fetch as onchain_fetch
-    oc = onchain_fetch(asset, rpc_url, onchain_lookback_blocks)
+
+    oc = onchain_fetch(asset, rpc_url, onchain_lookback_blocks, borrow_asset="USDC")
     if oc.usdc_utilization is None and oc.recent_liquidations is None:
         sources_failed.append("onchain:all_fields_unavailable")
 
@@ -223,6 +244,10 @@ def fetch(
         usdc_utilization=oc.usdc_utilization,
         asset_utilization=oc.asset_utilization,
         recent_liquidations=oc.recent_liquidations,
+        asset_frozen=oc.asset_frozen,
+        asset_paused=oc.asset_paused,
+        borrow_asset_frozen=oc.borrow_asset_frozen,
+        borrow_asset_paused=oc.borrow_asset_paused,
         usdc_supply_apy=usdc_supply_apy,
         asset_borrow_apy=asset_borrow_apy,
         wallet_collateral_usd=wallet_collateral_usd,
