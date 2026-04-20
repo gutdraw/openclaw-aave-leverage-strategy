@@ -465,7 +465,7 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
     # Also close immediately on Aave governance freeze/pause of any involved
     # asset (e.g. KelpDAO-style incident).
     if open_trade is not None and not cfg.paper_trading:
-        prev_usdc_util, prev_asset_util = get_last_utilizations(entries)
+        prev_usdc_util, prev_asset_util = state.get_last_utilizations(entries)
 
         if open_direction == "long":
             flash_util = data.usdc_utilization
