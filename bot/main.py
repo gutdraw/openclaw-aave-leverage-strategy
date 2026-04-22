@@ -881,37 +881,54 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
         # Reconcile logged supply/borrow against on-chain actuals.
         # The MCP vault may adjust the seed (e.g. gas rounding, existing Aave balance)
         # so the computed size.supply/borrow can diverge from what was actually opened.
+        # Retry up to 3 times with a delay — the tx may have just landed and the
+        # RPC node may not reflect the new Aave state immediately.
         actual_supply = size.supply
         actual_borrow = size.borrow
         if not cfg.paper_trading:
-            try:
-                pos = mcp.get_position()
-                aave_pos = (pos.get("aavePositions") or {}).get("positions") or []
-                if aave_pos:
-                    p = aave_pos[0]
-                    if sig.direction == "short":
+            import time as _time
+
+            for _attempt in range(3):
+                try:
+                    if _attempt > 0:
+                        _time.sleep(4)
+                    pos = mcp.get_position()
+                    aave_pos = (pos.get("aavePositions") or {}).get("positions") or []
+                    if aave_pos:
+                        p = aave_pos[0]
                         actual_supply = float(p.get("aTokenBalance", size.supply))
                         actual_borrow = float(p.get("variableDebt", size.borrow))
-                    else:
-                        actual_supply = float(p.get("aTokenBalance", size.supply))
-                        actual_borrow = float(p.get("variableDebt", size.borrow))
-                    if abs(actual_supply - size.supply) / max(size.supply, 1e-9) > 0.01:
-                        log.info(
-                            "on-chain supply %.6f differs from computed %.6f — using on-chain",
-                            actual_supply,
-                            size.supply,
-                        )
-                    if abs(actual_borrow - size.borrow) / max(size.borrow, 1e-9) > 0.01:
-                        log.info(
-                            "on-chain borrow %.6f differs from computed %.6f — using on-chain",
-                            actual_borrow,
-                            size.borrow,
-                        )
-            except Exception as e:
-                log.warning(
-                    "post-open on-chain reconciliation failed — using computed values: %s",
-                    e,
-                )
+                        if (
+                            abs(actual_supply - size.supply) / max(size.supply, 1e-9)
+                            > 0.01
+                        ):
+                            log.info(
+                                "on-chain supply %.6f differs from computed %.6f — using on-chain",
+                                actual_supply,
+                                size.supply,
+                            )
+                        if (
+                            abs(actual_borrow - size.borrow) / max(size.borrow, 1e-9)
+                            > 0.01
+                        ):
+                            log.info(
+                                "on-chain borrow %.6f differs from computed %.6f — using on-chain",
+                                actual_borrow,
+                                size.borrow,
+                            )
+                        break  # got a valid position — done
+                    # positions empty — tx may not be indexed yet, retry
+                    log.debug(
+                        "post-open reconciliation: empty positions on attempt %d",
+                        _attempt + 1,
+                    )
+                except Exception as e:
+                    log.warning(
+                        "post-open on-chain reconciliation failed (attempt %d) — %s",
+                        _attempt + 1,
+                        e,
+                    )
+                    break
 
         trade_entry = {
             "type": "trade",
