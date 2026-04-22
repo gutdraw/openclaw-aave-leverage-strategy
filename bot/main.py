@@ -400,6 +400,8 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
         "tech_ema_bull": tech.ema_bull if tech is not None else None,
         "tech_rsi": tech.rsi if tech is not None else None,
         "tech_source": tech.source if tech is not None else None,
+        "tech_mid_bull": tech.tf_mid_bull if tech is not None else None,
+        "tech_1d_bull": tech.tf_1d_bull if tech is not None else None,
     }
 
     # Derive the position_id for the current open trade (if any)
