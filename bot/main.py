@@ -896,7 +896,15 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
                     aave_pos = (pos.get("aavePositions") or {}).get("positions") or []
                     if aave_pos:
                         p = aave_pos[0]
-                        actual_supply = float(p.get("aTokenBalance", size.supply))
+                        atoken_bal = float(p.get("aTokenBalance", size.supply))
+                        # P&L formula uses supply as 1×seed (equity portion).
+                        # For longs the aToken is leverage×seed — divide back to seed.
+                        # For shorts the aToken IS the seed (USDC supply = seed×lev,
+                        # but P&L uses borrow not supply, so supply stored as-is).
+                        _lev = cfg.leverage_for(sig.direction)
+                        actual_supply = (
+                            atoken_bal / _lev if sig.direction == "long" else atoken_bal
+                        )
                         actual_borrow = float(p.get("variableDebt", size.borrow))
                         if (
                             abs(actual_supply - size.supply) / max(size.supply, 1e-9)
