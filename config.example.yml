@@ -63,6 +63,12 @@ stop_loss_pct: 3.0          # close when asset is down 3% from entry (default bo
 long_stop_loss_pct: 0.0     # override SL for longs only (0 = use stop_loss_pct)
 short_stop_loss_pct: 0.0    # override SL for shorts only (0 = use stop_loss_pct)
 
+# Trailing stop: close if price retreats X% from the peak since entry.
+# For longs: fires when price drops X% from the highest price seen.
+# For shorts: fires when price rises X% from the lowest price seen.
+# 0 = disabled. Recommended: 2.5 for 3x leverage, 4.0 for 2x.
+trailing_stop_pct: 2.5
+
 # Signal reversal exit: close a position when the trend signal flips against it.
 # Trend-following literature strongly recommends this over fixed TP (which caps winners).
 # signal_reversal_min_score: 0 = only close on full reversal (strong_short/strong_long)

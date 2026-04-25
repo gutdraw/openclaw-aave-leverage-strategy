@@ -615,7 +615,61 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
             state.append_entry(cfg.trades_file, trade_entry)
             return cycle_entry
 
-    # ── 5a. Signal reversal exit ──────────────────────────────────────
+    # ── 5a. Trailing stop ─────────────────────────────────────────────
+    # Close if price retreats trailing_stop_pct% from the highest (long) or
+    # lowest (short) price since the position was opened.
+    # Respects min_hold_hours so it doesn't fire on the very first candle.
+    if open_trade is not None and cfg.trailing_stop_pct > 0:
+        peak = state.get_position_peak(entries)
+        if peak > 0:
+            if open_direction == "long":
+                trail_drawdown = 100.0 * (peak - data.price) / peak
+                trail_triggered = trail_drawdown >= cfg.trailing_stop_pct
+            else:  # short: price rising from trough is bad
+                trail_drawdown = 100.0 * (data.price - peak) / peak
+                trail_triggered = trail_drawdown >= cfg.trailing_stop_pct
+
+            if trail_triggered:
+                hold_ok = True
+                if cfg.min_hold_hours > 0:
+                    open_ts = open_trade.get("ts", "")
+                    try:
+                        opened = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
+                        age_hours = (
+                            datetime.now(timezone.utc) - opened
+                        ).total_seconds() / 3600
+                        if age_hours < cfg.min_hold_hours:
+                            hold_ok = False
+                    except (ValueError, TypeError):
+                        pass
+
+                if hold_ok:
+                    log.info(
+                        "Trailing stop: peak=%.2f current=%.2f drawdown=%.2f%% >= %.2f%%",
+                        peak,
+                        data.price,
+                        trail_drawdown,
+                        cfg.trailing_stop_pct,
+                    )
+                    res = executor.close_position(
+                        pos_id, open_direction, supply_units, cfg, mcp, signer
+                    )
+                    trade_entry = _close_trade_entry(
+                        open_trade,
+                        data.price,
+                        cfg,
+                        "trailing_stop",
+                        res,
+                        eff_supply,
+                        eff_borrow,
+                        eff_entry_price,
+                    )
+                    cycle_entry["decision"] = "trailing_stop"
+                    state.append_entry(cfg.trades_file, cycle_entry)
+                    state.append_entry(cfg.trades_file, trade_entry)
+                    return cycle_entry
+
+    # ── 5b. Signal reversal exit ──────────────────────────────────────
     # Requires an actively opposing signal direction — "hold" (score=0, direction="none")
     # does not count as a reversal even though it shares score=0 with strong_short.
     if open_trade is not None and cfg.signal_reversal_exit:

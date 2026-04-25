@@ -124,6 +124,14 @@ class BotConfig:
     # 0.05 = 5 percentage-point jump per cycle triggers escape.
     liquidity_escape_velocity: float = 0.05
 
+    # ── Trailing stop ─────────────────────────────────────────────────
+    # Close if price drops more than trailing_stop_pct% from the highest
+    # price since position open. 0 = disabled.
+    # For longs: fires when price falls X% from peak (locks in gains).
+    # For shorts: fires when price rises X% from trough (locks in gains).
+    # Evaluated after TP/SL, before signal reversal — min_hold_hours applies.
+    trailing_stop_pct: float = 0.0
+
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True
     paper_seed_usd: float = (

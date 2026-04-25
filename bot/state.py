@@ -145,6 +145,24 @@ def get_last_utilizations(
     return None, None
 
 
+def get_position_peak(entries: list[dict]) -> float:
+    """Return the highest price seen since the current position was opened.
+    Scans forward from the most recent open trade through cycle entries.
+    Returns 0.0 if no open position or no cycle entries since open."""
+    peak = 0.0
+    in_position = False
+    for e in entries:
+        if e.get("type") == "trade" and e.get("action") == "open":
+            peak = float(e.get("entry_price", 0))
+            in_position = True
+        elif e.get("type") == "trade" and e.get("action") == "close":
+            in_position = False
+            peak = 0.0
+        elif in_position and e.get("type") == "cycle":
+            peak = max(peak, float(e.get("price", 0)))
+    return peak
+
+
 def append_entry(path: str, entry: dict) -> None:
     """Append a single JSON entry as a new line. Uses an exclusive file lock to prevent
     concurrent writes from corrupting the log."""
