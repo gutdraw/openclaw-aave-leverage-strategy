@@ -99,6 +99,10 @@ class BotConfig:
     # reopen is allowed again. Prevents indefinite blocking in range-bound markets.
     # Set 0 to disable (gate never expires — requires strong signal to reopen).
     post_tp_gate_hours: float = 48.0
+    # Post-trailing-stop gate: hours after a trailing-stop close before moderate-signal
+    # same-direction reopen is allowed. Mirrors post_tp_gate_hours but for stop-outs.
+    # Set 0 to disable (always allow reopen after trailing stop, even on moderate signal).
+    post_trailing_stop_gate_hours: float = 48.0
 
     # ── On-chain ──────────────────────────────────────────────────────────
     # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).

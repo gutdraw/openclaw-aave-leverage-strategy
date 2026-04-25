@@ -126,11 +126,12 @@ def _paper_health_factor(
     falls back to open_trade values if not provided.
 
     Long (supply asset, borrow USDC):
-      HF = (leverage * supply * lt) / borrow   (price cancels)
+      True Aave supply = leverage×seed asset; supply stored as 1×seed.
+      HF = (leverage * supply * price * lt) / borrow_usdc
 
-    Short (supply USDC seed, borrow lev×seed asset):
-      True Aave supply = (leverage+1)×seed USDC (flash loan loop).
-      HF = ((leverage+1) * supply * lt) / (borrow * price)
+    Short (supply USDC seed, borrow (lev-1)×seed asset):
+      True Aave supply = leverage×seed USDC (flash loan loop); supply stored as 1×seed.
+      HF = (leverage * supply * lt) / (borrow * price)
     """
     if open_trade is None:
         return 999.0
@@ -143,13 +144,14 @@ def _paper_health_factor(
         debt_usd = borrow * price
         if debt_usd <= 0:
             return 999.0
-        return ((leverage + 1) * supply * lt) / debt_usd
+        return (leverage * supply * lt) / debt_usd
     else:
         lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
         if borrow <= 0:
             return 999.0
-        # HF = (supply_asset * price * lt) / borrow_usdc
-        return (supply * price * lt) / borrow
+        # True Aave supply = leverage×seed; supply stored as 1×seed, so multiply back.
+        # HF = (leverage * supply_asset * price * lt) / borrow_usdc
+        return (leverage * supply * price * lt) / borrow
 
 
 def _position_id_for(direction: str, cfg: BotConfig, raw_cfg: dict) -> str:
@@ -870,6 +872,51 @@ def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
                         sig.label,
                     )
                     cycle_entry["decision"] = "skip_post_tp"
+                    state.append_entry(cfg.trades_file, cycle_entry)
+                    return cycle_entry
+
+    # Post-trailing-stop gate: after a stop-out, require strong signal to reopen
+    # same direction. Prevents immediately re-entering a failing move on moderate conviction.
+    if (
+        open_trade is None
+        and sig.multiplier > 0
+        and cfg.post_trailing_stop_gate_hours >= 0
+    ):
+        last_close = state.get_last_close(entries)
+        if (
+            last_close is not None
+            and last_close.get("reason") == "trailing_stop"
+            and last_close.get("direction") == sig.direction
+        ):
+            gate_active = True
+            if cfg.post_trailing_stop_gate_hours > 0:
+                try:
+                    stop_time = datetime.fromisoformat(
+                        last_close["ts"].replace("Z", "+00:00")
+                    )
+                    hours_since = (
+                        datetime.now(timezone.utc) - stop_time
+                    ).total_seconds() / 3600
+                    if hours_since >= cfg.post_trailing_stop_gate_hours:
+                        gate_active = False
+                        log.info(
+                            "Post-trailing-stop gate expired (%.1fh > %.1fh) — allowing reopen",
+                            hours_since,
+                            cfg.post_trailing_stop_gate_hours,
+                        )
+                except (KeyError, ValueError, TypeError):
+                    pass
+            if gate_active:
+                is_max_strength = (sig.direction == "long" and sig.score == 3) or (
+                    sig.direction == "short" and sig.score == 0
+                )
+                if not is_max_strength:
+                    log.info(
+                        "Post-trailing-stop gate: last %s close was stop-out, signal %s not at max strength — skip",
+                        sig.direction,
+                        sig.label,
+                    )
+                    cycle_entry["decision"] = "skip_post_trailing_stop"
                     state.append_entry(cfg.trades_file, cycle_entry)
                     return cycle_entry
 

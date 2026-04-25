@@ -93,6 +93,11 @@ tp_on_strong_signal: false
 # Gate expires after post_tp_gate_hours hours. Set 0 to never expire (requires strong signal always).
 post_tp_gate_hours: 48.0
 
+# Post-trailing-stop gate: after a stop-out close, require max-strength signal to reopen same direction.
+# Mirrors post_tp_gate_hours but for trailing-stop exits. Prevents chasing a fading move.
+# Set 0 to disable (allow reopen at moderate signal after a stop-out).
+post_trailing_stop_gate_hours: 48.0
+
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
 # These suppress new entries when conditions are unfavorable.

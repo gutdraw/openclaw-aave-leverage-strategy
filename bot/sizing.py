@@ -76,7 +76,7 @@ def compute(
         borrow = seed_usd * lev / price  # lev×seed in asset units (true Aave debt)
     else:
         supply = seed_usd / price  # asset units (e.g. ETH)
-        borrow = supply * (lev - 1)  # USDC to borrow
+        borrow = seed_usd * (lev - 1)  # USDC to borrow
 
     return PositionSize(seed_usd=seed_usd, supply=supply, borrow=borrow)
 
@@ -109,6 +109,6 @@ def compute_increase(
         borrow = increase_seed * lev / price
     else:
         supply = increase_seed / price
-        borrow = supply * (lev - 1)
+        borrow = increase_seed * (lev - 1)  # USDC to borrow
 
     return PositionSize(seed_usd=increase_seed, supply=supply, borrow=borrow)
