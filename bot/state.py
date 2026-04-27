@@ -146,21 +146,31 @@ def get_last_utilizations(
 
 
 def get_position_peak(entries: list[dict]) -> float:
-    """Return the highest price seen since the current position was opened.
-    Scans forward from the most recent open trade through cycle entries.
-    Returns 0.0 if no open position or no cycle entries since open."""
-    peak = 0.0
+    """Return the trailing-stop reference price since the current position was opened.
+
+    For longs:  returns the highest price seen (drawdown fires when price retreats from peak).
+    For shorts: returns the lowest price seen (drawdown fires when price rises from trough).
+    Returns 0.0 if no open position or no cycle entries since open.
+    """
+    ref = 0.0
     in_position = False
+    direction = "long"
     for e in entries:
         if e.get("type") == "trade" and e.get("action") == "open":
-            peak = float(e.get("entry_price", 0))
+            ref = float(e.get("entry_price", 0))
+            direction = e.get("direction", "long")
             in_position = True
         elif e.get("type") == "trade" and e.get("action") == "close":
             in_position = False
-            peak = 0.0
+            ref = 0.0
         elif in_position and e.get("type") == "cycle":
-            peak = max(peak, float(e.get("price", 0)))
-    return peak
+            p = float(e.get("price", 0))
+            if p > 0:
+                if direction == "short":
+                    ref = min(ref, p) if ref > 0 else p
+                else:
+                    ref = max(ref, p)
+    return ref
 
 
 def append_entry(path: str, entry: dict) -> None:

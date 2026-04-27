@@ -26,14 +26,12 @@ Examples at BTC=$70,000, seed=$50:
 Long:
   seed_usd = total_collateral_usd * base_position_pct * signal_multiplier
   supply   = seed_usd / price          (cbBTC units supplied to Aave)
-  borrow   = supply * (leverage - 1)   (USDC borrowed; BTC long exposure = leverage)
+  borrow   = seed_usd * (leverage - 1) (USDC borrowed; BTC long exposure = leverage)
 
 Short (flash-loan loop: supply lev×seed USDC to Aave, borrow (lev-1)×seed asset):
   seed_usd = same formula
   supply   = seed_usd                  (USDC seed; vault flash-loops to lev×seed on-chain)
   borrow   = seed_usd * (leverage-1) / price  (true Aave variableDebt in asset units)
-             NOTE: previously computed as lev/price (off by 1); on-chain reconciliation
-             now overwrites this with the actual variableDebt after open.
 """
 
 from dataclasses import dataclass
@@ -73,7 +71,9 @@ def compute(
     lev = cfg.leverage_for(signal.direction)
     if signal.direction == "short":
         supply = seed_usd  # USDC seed passed to MCP
-        borrow = seed_usd * lev / price  # lev×seed in asset units (true Aave debt)
+        borrow = (
+            seed_usd * (lev - 1) / price
+        )  # (lev-1)×seed in asset units (true Aave variableDebt)
     else:
         supply = seed_usd / price  # asset units (e.g. ETH)
         borrow = seed_usd * (lev - 1)  # USDC to borrow
@@ -106,7 +106,7 @@ def compute_increase(
     lev = cfg.leverage_for(signal.direction)
     if signal.direction == "short":
         supply = increase_seed
-        borrow = increase_seed * lev / price
+        borrow = increase_seed * (lev - 1) / price  # (lev-1)×seed in asset units
     else:
         supply = increase_seed / price
         borrow = increase_seed * (lev - 1)  # USDC to borrow
