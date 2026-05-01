@@ -307,16 +307,19 @@ def _ensure_wallet_token(
 # ── Single cycle ──────────────────────────────────────────────────────────────
 
 
-def run_cycle(cfg: BotConfig, raw_cfg: dict, signer=None) -> dict:
+def run_cycle(
+    cfg: BotConfig, raw_cfg: dict, signer=None, mcp: MCPClient = None
+) -> dict:
     """Run one full strategy cycle. Returns the cycle log entry."""
-    mcp = MCPClient(
-        base_url=cfg.mcp_url,
-        session_token=cfg.mcp_session_token,
-        wallet_address=cfg.user_address,
-        private_key=cfg.private_key or os.environ.get("PRIVATE_KEY", ""),
-        config_path=cfg._config_path,
-        session_duration=cfg.mcp_session_duration,
-    )
+    if mcp is None:
+        mcp = MCPClient(
+            base_url=cfg.mcp_url,
+            session_token=cfg.mcp_session_token,
+            wallet_address=cfg.user_address,
+            private_key=cfg.private_key or os.environ.get("PRIVATE_KEY", ""),
+            config_path=cfg._config_path,
+            session_duration=cfg.mcp_session_duration,
+        )
     if signer is None:
         signer = _build_signer(cfg)
 
@@ -1138,15 +1141,25 @@ def main() -> None:
         mode,
     )
 
-    # Build signer once outside the loop so nonce state persists across cycles.
-    # Each new Signer re-fetches nonce from chain, creating a race if the previous
-    # cycle's tx is still pending. One Signer per process avoids this entirely.
+    # Build signer and MCP client once outside the loop.
+    # Signer: nonce state must persist so pending txs don't race.
+    # MCPClient: session_token is updated in-place on renewal; recreating it
+    # every cycle from cfg.mcp_session_token loses the renewed token and
+    # triggers a fresh $4 payment each cycle.
     signer = _build_signer(cfg)
+    mcp = MCPClient(
+        base_url=cfg.mcp_url,
+        session_token=cfg.mcp_session_token,
+        wallet_address=cfg.user_address,
+        private_key=cfg.private_key or os.environ.get("PRIVATE_KEY", ""),
+        config_path=cfg._config_path,
+        session_duration=cfg.mcp_session_duration,
+    )
 
     if args.loop > 0:
         while True:
             try:
-                result = run_cycle(cfg, raw_cfg, signer)
+                result = run_cycle(cfg, raw_cfg, signer, mcp)
                 log.info(
                     "Cycle done — decision=%s direction=%s price=%.2f",
                     result.get("decision"),
@@ -1161,7 +1174,7 @@ def main() -> None:
             time.sleep(args.loop)
     else:
         try:
-            result = run_cycle(cfg, raw_cfg, signer)
+            result = run_cycle(cfg, raw_cfg, signer, mcp)
             log.info(
                 "Cycle done — decision=%s direction=%s price=%.2f",
                 result.get("decision"),
