@@ -407,6 +407,8 @@ def run_cycle(
         "tech_source": tech.source if tech is not None else None,
         "tech_mid_bull": tech.tf_mid_bull if tech is not None else None,
         "tech_1d_bull": tech.tf_1d_bull if tech is not None else None,
+        "tech_obv_bull": tech.obv_bull if tech is not None else None,
+        "tech_macd_bull": tech.macd_bull if tech is not None else None,
     }
 
     # Derive the position_id for the current open trade (if any)

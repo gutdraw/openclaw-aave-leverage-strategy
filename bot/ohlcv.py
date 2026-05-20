@@ -78,6 +78,10 @@ class TechSignal:
         None  # intermediate TF EMA (~4-6h); None = unavailable
     )
     tf_1d_bull: Optional[bool] = None  # daily EMA direction; None = unavailable
+    obv_bull: Optional[bool] = None  # OBV EMA(12)>EMA(26) on 1h; None = no volume data
+    macd_bull: Optional[bool] = (
+        None  # MACD histogram > 0 on 1h; None = insufficient data
+    )
 
 
 def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
@@ -88,17 +92,17 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
     Falls back to 1h-only scoring if higher timeframes are unavailable.
     """
     # ── 1h (required) ────────────────────────────────────────────────────
-    closes_1h, source = _fetch_tf(asset, 3600, 60, timeout)
+    closes_1h, vols_1h, source = _fetch_tf(asset, 3600, 60, timeout)
     if closes_1h is None or len(closes_1h) < _MIN_CANDLES:
         log.debug("ohlcv: 1h candles unavailable or insufficient for %s", asset)
         return None
 
     # ── intermediate ~4-6h (optional) ────────────────────────────────────
     # Coinbase supports 6h (21600s); Kraken supports 4h (240m).
-    closes_mid, _ = _fetch_tf(asset, 21600, 240, timeout)
+    closes_mid, _, _ = _fetch_tf(asset, 21600, 240, timeout)
 
     # ── 1d (optional) ────────────────────────────────────────────────────
-    closes_1d, _ = _fetch_tf(asset, 86400, 1440, timeout)
+    closes_1d, _, _ = _fetch_tf(asset, 86400, 1440, timeout)
 
     # ── Compute indicators ────────────────────────────────────────────────
     bull_1h = _ema_bull(closes_1h)
@@ -113,15 +117,21 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
         _ema_bull(closes_1d) if closes_1d and len(closes_1d) >= EMA_SLOW + 5 else None
     )
 
-    score = _multi_tf_score(bull_1h, rsi_1h, bull_mid, bull_1d)
+    # ── Volume / momentum indicators on 1h ───────────────────────────────
+    obv_b = _obv_bull(closes_1h, vols_1h) if vols_1h else None
+    macd_b = (_macd_hist(closes_1h) > 0) if len(closes_1h) >= EMA_SLOW + 9 + 5 else None
+
+    score = _multi_tf_score(bull_1h, rsi_1h, bull_mid, bull_1d, obv_b, macd_b)
 
     log.debug(
-        "ohlcv %s: 1h_bull=%s mid_bull=%s 1d_bull=%s rsi=%.1f → score=%d",
+        "ohlcv %s: 1h_bull=%s mid_bull=%s 1d_bull=%s rsi=%.1f obv_bull=%s macd_bull=%s → score=%d",
         asset,
         bull_1h,
         bull_mid,
         bull_1d,
         rsi_1h,
+        obv_b,
+        macd_b,
         score,
     )
 
@@ -133,6 +143,8 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
         candles_used=len(closes_1h),
         tf_mid_bull=bull_mid,
         tf_1d_bull=bull_1d,
+        obv_bull=obv_b,
+        macd_bull=macd_b,
     )
 
 
@@ -163,6 +175,8 @@ def _multi_tf_score(
     rsi_1h: float,
     bull_mid: Optional[bool],
     bull_1d: Optional[bool],
+    obv_bull: Optional[bool] = None,
+    macd_bull: Optional[bool] = None,
 ) -> int:
     """
     Combine three timeframe EMA directions into a score 0–4.
@@ -171,6 +185,9 @@ def _multi_tf_score(
     They must agree for any directional signal — disagreement → hold.
     1h + RSI only affect whether the signal is moderate or strong.
     Falls back to 1h-only if neither higher TF is available.
+
+    OBV and MACD act as a divergence gate on strong signals only:
+    if BOTH contradict the direction, strong → moderate.
     """
     rsi_bull = RSI_BULL_LOW <= rsi_1h <= RSI_BULL_HIGH
     rsi_bear = RSI_BEAR_LOW <= rsi_1h <= RSI_BEAR_HIGH
@@ -200,12 +217,18 @@ def _multi_tf_score(
     # ── Combine primary trend with 1h confirmation ────────────────────────
     if primary == "bull":
         if bull_1h and rsi_bull:
-            return 4  # strong_long: all timeframes aligned + RSI bullish
+            # Both OBV and MACD bearish while EMAs are bullish = momentum divergence
+            if obv_bull is False and macd_bull is False:
+                return 3  # downgrade: strong → moderate
+            return 4  # strong_long
         return 3  # moderate_long: higher TFs bullish, 1h not yet confirmed
 
     else:  # primary == "bear"
         if not bull_1h and rsi_bear:
-            return 0  # strong_short: all timeframes aligned + RSI bearish
+            # Both OBV and MACD bullish while EMAs are bearish = momentum divergence
+            if obv_bull is True and macd_bull is True:
+                return 1  # downgrade: strong → moderate
+            return 0  # strong_short
         return 1  # moderate_short: higher TFs bearish, 1h not yet confirmed
 
 
@@ -235,28 +258,27 @@ def _fetch_tf(
     coinbase_granularity: int,
     kraken_interval: int,
     timeout: int,
-) -> tuple[Optional[list[float]], str]:
+) -> tuple[Optional[list[float]], Optional[list[float]], str]:
     """
-    Fetch close prices for a given timeframe.
-    Tries Coinbase first (granularity in seconds), then Kraken (interval in minutes).
-    Returns (closes oldest→newest, source_name).
+    Fetch OHLCV for a given timeframe.
+    Tries Coinbase first, then Kraken.
+    Returns (closes oldest→newest, volumes oldest→newest, source_name).
     """
-    closes = _fetch_coinbase(asset, coinbase_granularity, timeout)
-    if closes is not None:
-        return closes, "coinbase"
-    closes = _fetch_kraken(asset, kraken_interval, timeout)
-    if closes is not None:
-        return closes, "kraken"
-    return None, "unavailable"
+    result = _fetch_coinbase(asset, coinbase_granularity, timeout)
+    if result is not None:
+        return result[0], result[1], "coinbase"
+    result = _fetch_kraken(asset, kraken_interval, timeout)
+    if result is not None:
+        return result[0], result[1], "kraken"
+    return None, None, "unavailable"
 
 
 def _fetch_coinbase(
     asset: str, granularity: int, timeout: int
-) -> Optional[list[float]]:
+) -> Optional[tuple[list[float], list[float]]]:
     """
     Fetch up to 300 candles from Coinbase Exchange at the given granularity (seconds).
-    Supported: 60, 300, 900, 3600, 21600, 86400.
-    Returns close prices oldest→newest.
+    Returns (closes, volumes) oldest→newest.
     """
     pair = COINBASE_PAIR.get(asset)
     if not pair:
@@ -272,17 +294,21 @@ def _fetch_coinbase(
         if not candles:
             return None
         # format: [time, low, high, open, close, volume] — newest first
-        return [float(c[4]) for c in reversed(candles)]
+        candles_asc = list(reversed(candles))
+        closes = [float(c[4]) for c in candles_asc]
+        volumes = [float(c[5]) for c in candles_asc]
+        return closes, volumes
     except Exception as e:
         log.debug("ohlcv coinbase error (gran=%d) for %s: %s", granularity, asset, e)
         return None
 
 
-def _fetch_kraken(asset: str, interval: int, timeout: int) -> Optional[list[float]]:
+def _fetch_kraken(
+    asset: str, interval: int, timeout: int
+) -> Optional[tuple[list[float], list[float]]]:
     """
     Fetch up to 720 candles from Kraken at the given interval (minutes).
-    Supported: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600.
-    Returns close prices oldest→newest.
+    Returns (closes, volumes) oldest→newest.
     """
     pair = KRAKEN_PAIR.get(asset)
     if not pair:
@@ -299,7 +325,9 @@ def _fetch_kraken(asset: str, interval: int, timeout: int) -> Optional[list[floa
         if not key:
             return None
         # format: [time, open, high, low, close, vwap, volume, count] — oldest first
-        return [float(c[4]) for c in result[key]]
+        closes = [float(c[4]) for c in result[key]]
+        volumes = [float(c[6]) for c in result[key]]
+        return closes, volumes
     except Exception as e:
         log.debug("ohlcv kraken error (interval=%d) for %s: %s", interval, asset, e)
         return None
@@ -320,6 +348,48 @@ def _ema(closes: list[float], period: int) -> float:
     for price in closes[1:]:
         ema = price * k + ema * (1 - k)
     return ema
+
+
+def _ema_series(values: list[float], period: int) -> list[float]:
+    """EMA series across all values — needed for MACD signal line."""
+    k = 2.0 / (period + 1)
+    ema = values[0]
+    result = [ema]
+    for v in values[1:]:
+        ema = v * k + ema * (1 - k)
+        result.append(ema)
+    return result
+
+
+def _macd_hist(closes: list[float]) -> float:
+    """
+    MACD histogram = MACD line - signal line.
+    MACD line = EMA(12) - EMA(26). Signal line = EMA(9) of MACD line.
+    Positive histogram = bullish momentum; negative = fading/bearish.
+    """
+    ema_fast = _ema_series(closes, EMA_FAST)
+    ema_slow = _ema_series(closes, EMA_SLOW)
+    macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
+    signal_line = _ema(macd_line, 9)
+    return macd_line[-1] - signal_line
+
+
+def _obv_bull(closes: list[float], volumes: list[float]) -> bool:
+    """
+    On-Balance Volume trend: True if OBV EMA(12) > OBV EMA(26).
+    OBV accumulates volume on up closes and subtracts on down closes.
+    Divergence from price (e.g. OBV falling while price rising) signals
+    weakening conviction behind the move.
+    """
+    obv = [0.0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i - 1]:
+            obv.append(obv[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            obv.append(obv[-1] - volumes[i])
+        else:
+            obv.append(obv[-1])
+    return _ema(obv, EMA_FAST) > _ema(obv, EMA_SLOW)
 
 
 def _rsi(closes: list[float], period: int) -> float:
