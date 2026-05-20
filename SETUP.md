@@ -190,6 +190,8 @@ For minimal resource use, run one cycle per hour via cron:
 | `short_stop_loss_pct` | `0.0` | Override SL for shorts only. `0` = use `stop_loss_pct`. |
 | `tp_on_strong_signal` | `false` | When false: skip TP if signal still at max strength. SL always applies. |
 | `post_tp_gate_hours` | `48.0` | After a TP close, block same-direction reopens for this many hours unless signal is at max strength. `0` = never expire gate. |
+| `trailing_stop_pct` | `2.5` | Close when price pulls back more than this % from the peak since open. `0` = disabled. For longs: tracks highest price. For shorts: tracks lowest price. |
+| `post_trailing_stop_hours` | `48.0` | After a trailing-stop close, block re-entry for this many hours. A strong signal can bypass early. `0` = never expire gate. |
 | `signal_reversal_exit` | `true` | Close when trend flips against position |
 | `signal_reversal_min_score` | `1` | Min reversal score: 0=strong only, 1=moderate+, 2=any |
 | `min_hold_hours` | `2.0` | Minimum hours before signal reversal can trigger |

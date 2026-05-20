@@ -1,5 +1,108 @@
 # Changelog
 
+## [1.5.0] — 2026-05-20
+
+### Added — OBV + MACD divergence gate on tech signal
+
+- **On-Balance Volume (OBV)** (`ohlcv.py`): computed from 1h candle volume data already
+  fetched from Coinbase/Kraken. OBV accumulates volume on up-closes and subtracts on
+  down-closes; `obv_bull` = EMA(12) > EMA(26) of OBV series.
+- **MACD histogram** (`ohlcv.py`): MACD line (EMA12 − EMA26) minus signal line (EMA9 of
+  MACD). Positive histogram = momentum building; negative = fading.
+- **Divergence gate on strong signals**: when BOTH OBV and MACD contradict the EMA
+  direction, strong signals are downgraded to moderate (score 4→3 for longs, 0→1 for
+  shorts). Single-indicator disagreement is ignored — both must diverge to trigger.
+  This prevents strong_long calls at momentum tops (e.g. price up but volume drying out
+  and MACD histogram already rolling over).
+- **Cycle log fields** (`main.py`): `tech_obv_bull` and `tech_macd_bull` added to every
+  cycle entry in `trades.jsonl` for auditability.
+- **Fetchers now return volumes** (`ohlcv.py`): `_fetch_coinbase` and `_fetch_kraken`
+  now return `(closes, volumes)` tuples. Volume was always in the candle payload
+  (index 5 for Coinbase, index 6 for Kraken) — previously discarded.
+
+## [1.4.0] — 2026-04-25
+
+### Added — Trailing stop exit
+
+- **`trailing_stop_pct` config** (`config.py`, `main.py`): closes the position when
+  price pulls back more than `trailing_stop_pct` % from the peak observed since open
+  (or since the last increase). Default `2.5`. `0` = disabled.
+- **Peak tracking** (`state.py`, `main.py`): each cycle updates a `price_peak` field in
+  `trades.jsonl` state. For longs: tracks highest price since open. For shorts: tracks
+  lowest price since open. The trailing stop fires when the move from peak exceeds the
+  threshold in the adverse direction.
+- **Post-trailing-stop gate** (`main.py`, `config.py`): after a trailing-stop close,
+  bot blocks re-entry for `post_trailing_stop_hours` (default 48h). A `strong` signal
+  can bypass the gate early. This prevents immediately re-entering the same chop that
+  triggered the stop.
+- **`skip_post_trailing_stop` decision** logged to `trades.jsonl` cycles while gate
+  is active.
+
+### Fixed
+
+- **Trailing stop direction bug** (`main.py`): peak tracking was using raw price for
+  both directions; for shorts the "peak" should be the lowest price (most profitable
+  point). Fixed to track `min_price` for shorts and `max_price` for longs.
+- **Short borrow units** (`sizing.py`, `main.py`): `borrow` for shorts was being stored
+  in cbBTC units instead of USDC — causing wrong weighted-average entry price on
+  `increase` trades. Fixed to store `borrow = seed_usd * (leverage - 1)`.
+- **Long borrow units** (`sizing.py`): symmetric fix — long borrow stored as
+  `seed_usd * (leverage - 1)` in USDC, not in asset units.
+- **`target_leverage` parameter rename** (`mcp_client.py`): `prepare_increase` was
+  sending `leverage` but MCP server expects `target_leverage`. Fixed.
+- **MCPClient session reuse** (`main.py`): `MCPClient` was being instantiated fresh
+  every cycle from `cfg.mcp_session_token`. When the client auto-renewed its session
+  token, the updated token was saved on the instance but `cfg` was never updated, so
+  the next cycle started a new client with the old expired token — triggering another
+  $4 renewal. Fixed by creating MCPClient once in `main()` and passing it into
+  `run_cycle`.
+
+## [1.3.0] — 2026-04-21
+
+### Added — Multi-timeframe OHLCV signal
+
+- **Three-timeframe EMA scoring** (`ohlcv.py`): upgraded from single-timeframe (1h
+  only) to three timeframes: 1h, intermediate (~6h via Coinbase 21600s / Kraken 240m),
+  and 1d. Higher TFs must agree — disagreement between 1d and mid returns `hold`
+  regardless of 1h. 1h + RSI only determine whether the signal is moderate or strong.
+- **Prevents 1h whipsaws**: a 1h wick against the trend while 1d and mid are still
+  bullish now resolves to `hold` rather than a reversal signal.
+- **Scoring table updated** (score 0–4 unchanged in label mapping):
+  - 4 = strong_long: 1d bull + mid bull + 1h bull + RSI bullish
+  - 3 = moderate_long: 1d bull + mid bull (1h unconfirmed)
+  - 2 = hold: 1d and mid disagree
+  - 1 = moderate_short: 1d bear + mid bear (1h unconfirmed)
+  - 0 = strong_short: 1d bear + mid bear + 1h bear + RSI bearish
+- **Cycle log fields**: `tech_mid_bull` and `tech_1d_bull` added to `trades.jsonl`.
+
+### Added — Liquidity escape
+
+- **Flash-loan pool utilization tracking** (`state.py`, `main.py`): the bot now tracks
+  Aave USDC and asset pool utilization across cycles. If the utilization trend indicates
+  the pool is drying up (approaching the interest-rate kink), an open position is closed
+  preemptively to avoid being unable to exit via flash-loan later.
+- **`close_reason: liquidity_escape`** logged when this path triggers.
+
+### Fixed
+
+- **On-chain reconciliation after open** (`main.py`, `state.py`): after a live
+  `openPosition` tx confirms, the bot now reads the actual on-chain supply/borrow from
+  the MCP position response and overwrites the locally-computed values in `trades.jsonl`.
+  Prevents P&L and HF drift caused by Uniswap slippage and fee rounding at open time.
+  Includes a 3-retry loop to handle RPC indexing lag.
+- **Always check wallet token before short** (`main.py`): `_ensure_wallet_token` was
+  skipped when wallet already held some USDC. Fixed to always run the swap-to-correct-
+  token check before opening a short (all cbBTC must be converted to USDC first).
+- **Short carry APR formula** (`main.py`): carry = `usdc_supply_apy * lev − asset_borrow_apy * (lev − 1)`.
+  Previous formula used `lev + 1` for the supply side (wrong for shorts, where supply
+  = `lev × seed` not `(lev+1) × seed`). Now matches Aave dashboard display.
+- **cbBTC approve gas limit** (`mcp_client.py`, `signer.py`): cbBTC's approve function
+  is heavier than standard ERC20 (proxy contract). Hard floor raised to 100k gas to
+  prevent out-of-gas reverts on the approve step.
+- **Swap all cbBTC → USDC on short entry** (`main.py`): previously only swapped enough
+  cbBTC to cover the seed, leaving the remainder as cbBTC in the wallet (unhedged BTC
+  exposure). Now swaps the full cbBTC balance before entering a short.
+
 ## [1.2.2] — 2026-04-01
 
 ### Fixed — Live trading bugs (first live cbBTC long)

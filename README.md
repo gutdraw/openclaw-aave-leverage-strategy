@@ -5,9 +5,9 @@
 
 Two-layer design:
 - **Layer 1 — Bot**: deterministic Python loop (no AI). Runs every 30 minutes, scores
-  EMA+RSI signals, executes trades via the `aave-leverage` MCP tool, appends structured
-  JSON to `trades.jsonl`. Cost: $4/month flat MCP session via x402 — cheaper than a
-  single LLM inference call at most model tiers.
+  multi-timeframe EMA+RSI+OBV+MACD signals, executes trades via the `aave-leverage` MCP
+  tool, appends structured JSON to `trades.jsonl`. Cost: $4/month flat MCP session via
+  x402 — cheaper than a single LLM inference call at most model tiers.
 - **Layer 2 — Agent**: any LLM (Claude, GPT, Hermes) reads `trades.jsonl` periodically,
   diagnoses anomalies, tunes parameters, and proposes improvements. The agent never
   touches the execution layer — reads logs, suggests code/config changes, human approves.
@@ -84,7 +84,7 @@ run the aave-leverage-strategy for one cycle
 OpenClaw will:
 1. Read `config.yml`
 2. Fetch market data — CoinGecko prices + volume, Aave MCP position, BTC dominance, perp funding rate, Fear & Greed index, Base on-chain Aave state, hourly OHLCV candles
-3. Compute the OHLCV EMA+RSI signal (Coinbase → Kraken fallback; CoinGecko 3-timeframe as last resort) and apply 9 no-trade filters
+3. Compute the OHLCV signal — 3-timeframe EMA (1h/6h/1d) + RSI + OBV + MACD divergence gate (Coinbase → Kraken fallback; CoinGecko 3-timeframe as last resort) — and apply 9 no-trade filters
 4. Decide whether to open, hold, or close
 5. Write a cycle entry to `trades.jsonl`
 6. Print the P&L summary
@@ -162,7 +162,7 @@ openclaw-aave-leverage-strategy/
 │   ├── main.py           # Entry point — per-cycle execution loop
 │   ├── config.py         # Config dataclass
 │   ├── market.py         # Market data fetcher (7 sources)
-│   ├── ohlcv.py          # OHLCV signal engine — EMA+RSI (Coinbase → Kraken)
+│   ├── ohlcv.py          # OHLCV signal engine — 3-TF EMA + RSI + OBV + MACD (Coinbase → Kraken)
 │   ├── onchain.py        # Aave v3 Base on-chain reads (utilization, liquidations)
 │   ├── signal.py         # CoinGecko 3-timeframe signal (last-resort fallback)
 │   ├── filters.py        # 9 no-trade filters
