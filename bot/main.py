@@ -783,6 +783,17 @@ def run_cycle(
             and open_signal != "strong_short"
         )
         if signal_upgraded:
+            current_lev = float(open_trade.get("leverage", 0))
+            target_lev = cfg.leverage_for(open_direction)
+            if target_lev <= current_lev:
+                log.info(
+                    "Signal upgraded to %s but already at max leverage %.1fx — holding",
+                    sig.label,
+                    current_lev,
+                )
+                signal_upgraded = False
+
+        if signal_upgraded:
             current_seed = float(open_trade.get("seed_usd", 0))
             eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
             delta = sizing.compute_increase(
