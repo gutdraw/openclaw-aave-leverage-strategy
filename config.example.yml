@@ -158,3 +158,11 @@ liquidity_escape_velocity: 0.05      # exit if utilization jumped > 5pp in one c
 hf_defense_reduce: 1.35     # call prepare_reduce if health factor drops below this
 hf_defense_close: 1.20      # force close if health factor drops below this
 min_open_hf: 1.30           # don't open a new position if projected HF would be below this
+
+# Short-specific HF thresholds.
+# 2.5x short: supply=2.5×seed USDC, borrow=1.5×seed cbBTC → HF ~1.30 at open
+# (USDC liquidation threshold ~78% on Aave Base v3; 3x short opens at ~1.17, too tight)
+short_max_leverage: 2.5     # BTC short exposure = leverage-1 = 1.5x
+short_min_open_hf: 1.25
+short_hf_defense_reduce: 1.20   # ~8% adverse BTC move from 2.5x open
+short_hf_defense_close: 1.10    # ~17% adverse BTC move from 2.5x open

@@ -775,23 +775,11 @@ def run_cycle(
         and not already_increased
     ):
         open_signal = open_trade.get("signal", "")
+        # Shorts always open at full size (sizing.py), so mid-position increases
+        # are longs-only. prepare_increase for shorts targets leverage, not seed.
         signal_upgraded = (
             open_direction == "long" and sig.score == 3 and open_signal != "strong_long"
-        ) or (
-            open_direction == "short"
-            and sig.score == 0
-            and open_signal != "strong_short"
         )
-        if signal_upgraded:
-            current_lev = float(open_trade.get("leverage", 0))
-            target_lev = cfg.leverage_for(open_direction)
-            if target_lev <= current_lev:
-                log.info(
-                    "Signal upgraded to %s but already at max leverage %.1fx — holding",
-                    sig.label,
-                    current_lev,
-                )
-                signal_upgraded = False
 
         if signal_upgraded:
             current_seed = float(open_trade.get("seed_usd", 0))

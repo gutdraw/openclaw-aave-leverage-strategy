@@ -173,10 +173,10 @@ For minimal resource use, run one cycle per hour via cron:
 | `long_leverage` | `0.0` | Override leverage for longs only. `0` = use `leverage`. |
 | `short_leverage` | `0.0` | Override leverage for shorts only. `0` = use `leverage`, capped at `short_max_leverage`. |
 | `max_leverage` | `4.0` | Hard cap for longs — server also enforces |
-| `short_max_leverage` | `2.0` | Hard cap for shorts. 3x short HF ≈1.04 (near liquidation). |
+| `short_max_leverage` | `2.5` | Hard cap for shorts. 2.5x → 1.5x BTC exposure, HF ~1.30. 3x → HF ~1.17 (risky). |
 | `base_position_pct` | `0.20` | Fraction of total collateral used as seed |
-| `strong_signal_size` | `1.0` | Multiplier for strong signal (3/3 timeframes) |
-| `moderate_signal_size` | `0.5` | Multiplier for moderate signal (2/3 timeframes) |
+| `strong_signal_size` | `1.0` | Multiplier for longs only (shorts always open at full size) |
+| `moderate_signal_size` | `0.5` | Multiplier for moderate long signal. Shorts ignore this — always use `strong_signal_size`. |
 
 ### Exit thresholds
 
@@ -227,9 +227,9 @@ For minimal resource use, run one cycle per hour via cron:
 | `hf_defense_reduce` | `1.35` | Trigger reduce below this health factor (longs) |
 | `hf_defense_close` | `1.20` | Force-close below this health factor (longs) |
 | `min_open_hf` | `1.30` | Don't open a long if current HF is below this |
-| `short_hf_defense_reduce` | `1.09` | Trigger reduce below this HF (shorts). Must be < 1.17 (2x short open HF). |
-| `short_hf_defense_close` | `1.05` | Force-close below this HF (shorts). |
-| `short_min_open_hf` | `1.12` | Don't open a short if current HF is below this |
+| `short_hf_defense_reduce` | `1.20` | Trigger reduce below this HF (shorts). At 2.5x leverage this fires on ~8% adverse BTC move. |
+| `short_hf_defense_close` | `1.10` | Force-close below this HF (shorts). ~17% adverse move at 2.5x. |
+| `short_min_open_hf` | `1.25` | Don't open a short if current HF is below this |
 
 ## Running tests
 

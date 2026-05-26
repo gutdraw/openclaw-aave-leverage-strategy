@@ -63,7 +63,12 @@ def compute(
         if cfg.paper_trading and cfg.paper_seed_usd > 0
         else total_collateral_usd
     )
-    seed_usd = effective_collateral * cfg.base_position_pct * signal.multiplier
+    # Shorts always open at full size: prepare_increase operates on leverage, not seed,
+    # so a same-leverage increase call barely moves the position. Open fully from the start.
+    multiplier = (
+        cfg.strong_signal_size if signal.direction == "short" else signal.multiplier
+    )
+    seed_usd = effective_collateral * cfg.base_position_pct * multiplier
 
     if seed_usd <= 0 or price <= 0:
         return PositionSize(seed_usd=0.0, supply=0.0, borrow=0.0)

@@ -61,16 +61,13 @@ class BotConfig:
     hf_defense_reduce: float = 1.35
 
     # ── Health factor thresholds — shorts ─────────────────────────────────
-    # 2x short (supply=3×seed USDC, borrow=2×seed cbBTC/WETH) opens at HF ~1.17.
-    # Short-specific thresholds must be below 1.17 to avoid immediate auto-close.
-    short_max_leverage: float = 2.0  # hard cap — 3x short HF ~1.04 (near liquidation)
-    short_min_open_hf: float = 1.12  # skip open if HF < this (buffer below 1.17)
-    short_hf_defense_close: float = (
-        1.05  # force close if HF drops here (~11% adverse move at 2x)
-    )
-    short_hf_defense_reduce: float = (
-        1.09  # reduce if HF drops here (~7% adverse move at 2x)
-    )
+    # 2.5x short: supply=2.5×seed USDC, borrow=1.5×seed cbBTC → HF ~1.30 at open
+    # (assumes USDC liquidation threshold ~78% on Aave Base v3)
+    # 3x short opens at HF ~1.17 — too tight; 2.5x is the recommended cap.
+    short_max_leverage: float = 2.5  # BTC short exposure = leverage-1 = 1.5x
+    short_min_open_hf: float = 1.25  # skip open if HF < this
+    short_hf_defense_close: float = 1.10  # force close (~17% adverse BTC move at 2.5x)
+    short_hf_defense_reduce: float = 1.20  # reduce (~8% adverse BTC move at 2.5x)
 
     # ── Exit rules ────────────────────────────────────────────────────────
     take_profit_pct: float = 5.0
