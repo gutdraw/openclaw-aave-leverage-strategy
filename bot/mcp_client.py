@@ -47,6 +47,7 @@ class MCPClient:
         None  # if set, persists renewed token back to config file
     )
     session_duration: str = "month"  # hour | day | week | month
+    _last_renewal: float = 0.0  # epoch seconds of last successful renewal
 
     def call(self, tool: str, args: dict) -> dict:
         """Call a single MCP tool. Auto-renews session on 401/402 if private_key set."""
@@ -89,6 +90,15 @@ class MCPClient:
         Updates self.session_token and persists to config file if config_path set.
         Raises SessionExpiredError if no private key is available.
         """
+        elapsed = time.time() - self._last_renewal
+        if elapsed < 120:
+            # Guard against double-payment if two processes race on the same expiry.
+            log.warning(
+                "Renewal attempted %.0fs after last renewal — skipping to avoid double-payment",
+                elapsed,
+            )
+            return
+
         pk = self.private_key or os.environ.get("PRIVATE_KEY", "")
         if not pk:
             raise SessionExpiredError(
@@ -205,6 +215,7 @@ class MCPClient:
             )
 
         self.session_token = r2.json()["session_token"]
+        self._last_renewal = time.time()
         log.info("MCP session renewed successfully")
         self._persist_token()
 
