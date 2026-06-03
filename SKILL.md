@@ -116,23 +116,23 @@ When ready to go live, set `paper_trading: false` in `config.yml` and ensure
 | Position sizing | Scales seed size by signal confidence (full / half) |
 | Paper trading | Full simulation, no chain calls, identical log output |
 | P&L tracking | Append-only `trades.jsonl` — entry price, exit price, net P&L per trade |
-| HF defense | Longs: reduce < 1.35, close < 1.20. Shorts: reduce < 1.09, close < 1.05 |
+| HF defense | Longs: reduce < 1.35, close < 1.20. Shorts: reduce < 1.12, close < 1.06 |
 | TP / SL | Configurable % from entry, checked every cycle |
 
 ## Supported assets and directions
 
 | Asset | Long | Short | Long max leverage | Short max leverage |
 |-------|------|-------|-------------------|--------------------|
-| WETH | Supply WETH, borrow USDC | Supply USDC, borrow WETH | 4.5x (config cap: 3x) | **2x hard cap** (HF ~1.17 at open) |
-| cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) | **2x hard cap** (HF ~1.17 at open) |
+| WETH | Supply WETH, borrow USDC | Supply USDC, borrow WETH | 4.5x (config cap: 3x) | **3x cap (2x BTC exposure)** (HF ~1.17 at open) |
+| cbBTC | Supply cbBTC, borrow USDC | Supply USDC, borrow cbBTC | 3.3x (config cap: 3x) | **3x cap (2x BTC exposure)** (HF ~1.17 at open) |
 | wstETH | Supply wstETH, borrow WETH | — (not supported) | 4.3x (config cap: 3x) | — |
 
-**Why 2x is the short cap:** The MCP flash-loan loop creates `supply=(lev+1)×seed` USDC
-and `borrow=lev×seed` asset on-chain. USDC liquidation threshold on Aave v3 Base is 78%.
-At 2x short: supply=3×seed USDC, borrow=2×seed cbBTC/WETH → HF = 3×0.78/2 = **1.17**.
-At 3x short: supply=4×seed USDC, borrow=3×seed → HF = 4×0.78/3 = **1.04** — one small
-adverse move causes liquidation. The bot enforces this cap in `sizing.py` regardless of
-`leverage` config.
+**Why 3x is the short cap (2x BTC exposure):** `short_leverage` is balance-sheet leverage:
+`short_leverage=3` → supply=3×seed USDC, borrow=2×seed asset on Aave. BTC short exposure
+= leverage−1 = 2x. USDC liquidation threshold on Aave v3 Base is 78%.
+At 3x (2x BTC exposure): supply=3×seed USDC, borrow=2×seed → HF = 3×0.78/2 = **1.17**.
+At 4x (3x BTC exposure): supply=4×seed USDC, borrow=3×seed → HF = 4×0.78/3 = **1.04** —
+one small adverse move causes liquidation. The bot caps shorts at `short_max_leverage=3`.
 
 The bot trades both longs and shorts automatically based on the OHLCV signal:
 - EMA bull + RSI bullish zone → long (strong or moderate depending on RSI strength)
@@ -262,7 +262,7 @@ The file is gitignored — it contains your wallet address.
 | `user_address` | string | — | Your dedicated bot wallet address. **Required. Never share with another bot instance.** |
 | `leverage` | float | `3.0` | Leverage for long positions (WETH max safe 4.5x, cbBTC 3.3x). |
 | `max_leverage` | float | `4.0` | Hard cap for longs. MCP server also enforces per-asset ceiling. |
-| `short_max_leverage` | float | `2.0` | Hard cap for shorts. Enforced in code regardless of `leverage`. 3x short HF ~1.04. |
+| `short_max_leverage` | float | `3.0` | Hard cap for shorts. `short_leverage=3` → 2x BTC exposure, HF ~1.17. `short_leverage=4` → HF ~1.04 — too tight. |
 | `base_position_pct` | float | `0.20` | Fraction of total collateral used as seed on a strong signal (1.0 multiplier). |
 | `strong_signal_size` | float | `1.0` | Multiplier on `base_position_pct` for a strong signal (3/3 or 0/3 timeframes). |
 | `moderate_signal_size` | float | `0.5` | Multiplier for a moderate signal (2/3 or 1/3 timeframes). |
@@ -274,9 +274,9 @@ The file is gitignored — it contains your wallet address.
 | `hf_defense_reduce` | float | `1.35` | Call `prepare_reduce` if HF drops below this (longs). |
 | `hf_defense_close` | float | `1.20` | Force close if HF drops below this (longs). |
 | `min_open_hf` | float | `1.30` | Skip opening a long if current HF is below this. |
-| `short_hf_defense_reduce` | float | `1.09` | Call `prepare_reduce` if HF drops below this (shorts). ~7% adverse move at 2x. Must be < 1.17 (2x short open HF). |
-| `short_hf_defense_close` | float | `1.05` | Force close if HF drops below this (shorts). ~11% adverse move at 2x. Liquidation is at ~17% adverse. |
-| `short_min_open_hf` | float | `1.12` | Skip opening a short if current HF is below this. |
+| `short_hf_defense_reduce` | float | `1.12` | Call `prepare_reduce` if HF drops below this (shorts). ~5% adverse BTC move at 3x. Must be < 1.17 (3x short open HF). |
+| `short_hf_defense_close` | float | `1.06` | Force close if HF drops below this (shorts). ~10% adverse BTC move at 3x. Liquidation at ~17% adverse. |
+| `short_min_open_hf` | float | `1.14` | Skip opening a short if current HF is below this. Buffer below the 1.17 opening HF at 3x. |
 | `signal_reversal_exit` | bool | `true` | Close position when trend flips against it. |
 | `signal_reversal_min_score` | int | `0` | Min reversal score to trigger: 0=strong only, 1=moderate+, 2=any opposing signal. |
 | `min_hold_hours` | float | `2.0` | Minimum hours before signal reversal can close a position (prevents whipsaw). |
@@ -536,24 +536,24 @@ Where:
 | Direction | Supply (Aave) | Borrow (Aave) |
 |-----------|--------------|---------------|
 | Long (lev=3) | `lev × seed / price` asset units | `(lev-1) × seed` USDC |
-| Short (lev=2) | `(lev+1) × seed` USDC | `lev × seed / price` asset units |
+| Short (lev=3) | `lev × seed` USDC | `(lev-1) × seed / price` asset units |
 
-At 2x short with $1,000 seed: supply = $3,000 USDC, borrow = 2×$1,000/price cbBTC.
+At 3x short with $1,000 seed: supply = $3,000 USDC, borrow = 2×$1,000/price cbBTC.
 Opening HF = (3×seed×0.78) / (2×seed) = **1.17**.
 
 **Short carry APR** (logged each cycle as `short_carry_apr`):
 ```
 carry = usdc_supply_apy × (lev+1)  −  asset_borrow_apy × lev
 ```
-At 2x (lev=2) with typical rates: `2.45%×3 − 0.82%×2 = 5.71%` annualised on seed.
-The earning side is amplified by `(lev+1)` because the full leveraged USDC stack earns
-the supply APY; the borrow side is `lev×seed` paying the asset borrow APY.
+At 3x (lev=3) with typical rates: `2.45%×3 − 0.82%×2 = 5.71%` annualised on seed.
+The earning side is amplified by `lev` because the full leveraged USDC stack earns
+the supply APY; the borrow side is `(lev-1)×seed` paying the asset borrow APY.
 
 **Pre-open health factor check:**
 
-For shorts, estimated opening HF = `(lev+1) × lt / lev` where `lt` = USDC liquidation
-threshold (0.78). For lev=2: `3×0.78/2 = 1.17`. If projected HF < `short_min_open_hf`
-(default 1.12), skip the open and log `"decision": "skip_min_hf"`.
+For shorts, estimated opening HF = `lev × lt / (lev-1)` where `lt` = USDC liquidation
+threshold (0.78). For lev=3: `3×0.78/2 = 1.17`. If projected HF < `short_min_open_hf`
+(default 1.14), skip the open and log `"decision": "skip_min_hf"`.
 
 For longs, HF is checked against `min_open_hf` (default 1.30).
 
