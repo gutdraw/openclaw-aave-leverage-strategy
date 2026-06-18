@@ -46,7 +46,7 @@ class BotConfig:
     # Extreme greed → suppress longs (over-extended). Extreme fear → suppress shorts.
     max_fear_greed_long: int = 85  # skip longs if F&G >= this
     min_fear_greed_short: int = (
-        15  # skip shorts if F&G <= this AND RSI < fear_greed_short_rsi_floor
+        25  # skip shorts if F&G <= this AND RSI < fear_greed_short_rsi_floor
     )
     fear_greed_short_rsi_floor: float = (
         35.0  # F&G short block lifted once RSI recovers above this

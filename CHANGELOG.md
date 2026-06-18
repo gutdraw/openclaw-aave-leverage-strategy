@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.6.0] — 2026-06-18
+
+### Changed — Fear & Greed short gate raised from 15 → 25
+
+- **`min_fear_greed_short` raised to 25** (`config.py`, `config.example.yml`): the gate
+  that blocks short entries in extreme fear was set at F&G ≤ 15. Backtesting 4,100+
+  live cycles showed the gate fired 58 times at the old threshold and was wrong 53.6%
+  of the time — blocking legitimate short entries more often than protecting against
+  panic bounces. At F&G ≤ 25 the gate achieves 62.2% accuracy on blocked signals,
+  making it actually defensive rather than a net negative. The RSI floor override
+  (RSI ≥ 35 lifts the block) is unchanged.
+- **Research basis**: AI subagent backtest across March 28 – June 18, 2026 data;
+  tested 6 threshold configurations (F&G ≤ 10, 15, 20, 25, disabled, wider RSI floor).
+  F&G ≤ 25 with RSI < 35 was the best-performing gate configuration. Disabling entirely
+  was the primary recommendation but F&G ≤ 25 was retained as a conservative guard
+  against genuine panic-bottom scenarios given the small live sample size (36 trades).
+
 ## [1.5.0] — 2026-05-20
 
 ### Added — OBV + MACD divergence gate on tech signal
