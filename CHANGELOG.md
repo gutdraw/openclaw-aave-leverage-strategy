@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0] — 2026-06-19
+
+### Changed — Signal-conditional time-based exit
+
+- **Time exit now skips when signal is still strong** (`main.py`): the 24h `max_hold_days`
+  exit previously closed unconditionally, causing the bot to immediately re-enter on the
+  next cycle when `signal == strong_short/strong_long` — a pointless round-trip paying
+  gas and slippage for no strategic benefit. The exit now only fires when the position
+  has aged past `max_hold_days` AND the signal has weakened (not `strong_short` for
+  shorts, not `strong_long` for longs). If still strongly aligned it logs a skip and
+  continues holding. This makes the time exit a stalled-trade cutter rather than a
+  mechanical clock.
+
 ## [1.7.0] — 2026-06-18
 
 ### Changed — 24h max hold time (max_hold_days 14 → 1)

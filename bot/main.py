@@ -742,7 +742,20 @@ def run_cycle(
             try:
                 opened = datetime.fromisoformat(open_ts.replace("Z", "+00:00"))
                 age_days = (datetime.now(timezone.utc) - opened).total_seconds() / 86400
-                if age_days >= cfg.max_hold_days:
+                still_strong = (
+                    open_direction == "short"
+                    and sig.score == 0
+                    or open_direction == "long"
+                    and sig.score == 4
+                )
+                if age_days >= cfg.max_hold_days and still_strong:
+                    log.info(
+                        "Time-based exit skipped: age %.1fd >= %.1fd but signal still strong (%s)",
+                        age_days,
+                        cfg.max_hold_days,
+                        sig.label,
+                    )
+                elif age_days >= cfg.max_hold_days:
                     log.info(
                         "Time-based exit: position age %.1fd >= max_hold_days %.1fd",
                         age_days,
