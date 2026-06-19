@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.7.0] — 2026-06-18
+
+### Changed — 24h max hold time (max_hold_days 14 → 1)
+
+- **`max_hold_days` lowered to 1.0** (`config.py`, `config.example.yml`, EC2 `my-config.yml`):
+  backtesting 4,100+ live cycles showed reducing max hold from 14 days to 24 hours
+  improves total P&L by 14.6% (+$14.23 vs +$12.42) and win rate from 44.4% → 47.2%.
+  The trailing stop (2.5%) remains active alongside the time-based exit as a safety net
+  during the 2-week validation period before considering further trailing stop changes.
+- **Safety validated**: MAE analysis confirmed worst historical health factor without
+  stops was 1.1247 (well above the 1.10 liquidation danger zone). Zero liquidation risk
+  across all 36 closed trades under any exit strategy tested.
+- **Research basis**: AI subagent deep-research across 4,272 data records (Mar–Jun 2026).
+  T24 beat signal-only (neutral), T48 ($2.58), T72/T96, and current (trailing-stop-only).
+
 ## [1.6.0] — 2026-06-18
 
 ### Changed — Fear & Greed short gate raised from 15 → 25
