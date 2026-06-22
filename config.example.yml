@@ -101,6 +101,15 @@ post_tp_gate_hours: 48.0
 # Set 0 to disable (allow reopen at moderate signal after a stop-out).
 post_trailing_stop_gate_hours: 48.0
 
+# Post-time-exit gate: hours after a max_hold_days close before same-direction reopen.
+# Prevents immediately re-entering the same stalled signal that triggered the time exit.
+# Set 0 to disable.
+post_max_hold_gate_hours: 12.0
+
+# Require strong signal for short entries. When true, moderate_short entries are skipped.
+# Backtesting: moderate shorts 33% WR / -$10.70 vs strong shorts 50% WR / +$17.92.
+require_strong_short: true
+
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS
 # These suppress new entries when conditions are unfavorable.

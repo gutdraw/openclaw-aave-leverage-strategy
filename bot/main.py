@@ -937,6 +937,53 @@ def run_cycle(
                     state.append_entry(cfg.trades_file, cycle_entry)
                     return cycle_entry
 
+    # Post-time-exit gate: after a max_hold_days close, block same-direction reopen
+    # for post_max_hold_gate_hours to prevent immediately re-entering on the same
+    # stalled signal that just triggered the time exit.
+    if open_trade is None and sig.multiplier > 0 and cfg.post_max_hold_gate_hours > 0:
+        last_close = state.get_last_close(entries)
+        if (
+            last_close is not None
+            and last_close.get("reason") == "max_hold_days"
+            and last_close.get("direction") == sig.direction
+        ):
+            try:
+                close_time = datetime.fromisoformat(
+                    last_close["ts"].replace("Z", "+00:00")
+                )
+                hours_since = (
+                    datetime.now(timezone.utc) - close_time
+                ).total_seconds() / 3600
+                if hours_since < cfg.post_max_hold_gate_hours:
+                    log.info(
+                        "Post-time-exit gate: %.1fh since max_hold_days close (gate=%.1fh) — skip",
+                        hours_since,
+                        cfg.post_max_hold_gate_hours,
+                    )
+                    cycle_entry["decision"] = "skip_post_max_hold"
+                    state.append_entry(cfg.trades_file, cycle_entry)
+                    return cycle_entry
+            except (KeyError, ValueError, TypeError):
+                pass
+
+    # Strong-signal-only filter for shorts: skip moderate_short entries when configured.
+    # Backtesting showed moderate shorts have 33% win rate vs 50% for strong_short,
+    # with all 9 moderate trades net losers across the live dataset.
+    if (
+        open_trade is None
+        and sig.direction == "short"
+        and cfg.require_strong_short
+        and sig.score != 0
+    ):
+        log.info(
+            "require_strong_short: signal %s (score=%d) not strong_short — skip",
+            sig.label,
+            sig.score,
+        )
+        cycle_entry["decision"] = "skip_moderate_short"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
     if open_trade is None and sig.multiplier > 0:
         eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
         size = sizing.compute(eff_collateral, data.price, sig, cfg)

@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.0] — 2026-06-22
+
+### Added — Strong-short-only entry filter + post-time-exit gate
+
+- **`require_strong_short: true`** (`config.py`, `main.py`): new flag that blocks
+  `moderate_short` entries entirely, only allowing `strong_short` to open new short
+  positions. Backtesting 4,371 cycles showed moderate shorts have 33% win rate and
+  -$10.70 total P&L (all 9 moderate trades were net losers) vs strong shorts at 50%
+  win rate and +$17.92. The Jun 18-22 sequence of three consecutive `moderate_short`
+  entries each time-exited at a loss (-$3.06, -$2.80, -$1.00) illustrated the problem
+  directly. Decision logged as `skip_moderate_short`.
+- **`post_max_hold_gate_hours: 12.0`** (`config.py`, `main.py`): new gate that blocks
+  same-direction re-entry for 12 hours after a `max_hold_days` time exit. Prevents
+  the bot from immediately re-entering on the same stalled signal that just triggered
+  the time exit — the root cause of the close-and-immediately-reopen churn seen Jun
+  18-22. Decision logged as `skip_post_max_hold`.
+
 ## [1.8.0] — 2026-06-19
 
 ### Changed — Signal-conditional time-based exit

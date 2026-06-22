@@ -100,6 +100,15 @@ class BotConfig:
     # same-direction reopen is allowed. Mirrors post_tp_gate_hours but for stop-outs.
     # Set 0 to disable (always allow reopen after trailing stop, even on moderate signal).
     post_trailing_stop_gate_hours: float = 48.0
+    # Post-time-exit gate: hours after a max_hold_days close before same-direction
+    # reopen is allowed at any signal strength. Prevents immediate re-entry on the
+    # same stalled signal that just triggered the time exit.
+    # Set 0 to disable (allow immediate reopen).
+    post_max_hold_gate_hours: float = 12.0
+    # Require strong signal to open short positions. When True, moderate_short entries
+    # are skipped — only strong_short triggers a new short. Backtesting showed moderate
+    # shorts have 33% win rate vs 50% for strong, with all 9 moderate trades net losers.
+    require_strong_short: bool = True
 
     # ── On-chain ──────────────────────────────────────────────────────────
     # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).
