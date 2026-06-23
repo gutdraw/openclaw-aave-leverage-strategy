@@ -66,8 +66,8 @@ class BotConfig:
     # (assumes USDC liquidation threshold ~78% on Aave Base v3)
     short_max_leverage: float = 3.0  # BTC short exposure = leverage-1 = 2x
     short_min_open_hf: float = 1.14  # skip open if HF < this (buffer below 1.17)
-    short_hf_defense_close: float = 1.06  # force close (~10% adverse BTC move at 3x)
-    short_hf_defense_reduce: float = 1.12  # reduce (~5% adverse BTC move at 3x)
+    short_hf_defense_close: float = 1.06  # force close (~9% adverse BTC move at 3x)
+    short_hf_defense_reduce: float = 1.10  # reduce (~5% adverse BTC move at 3x)
 
     # ── Exit rules ────────────────────────────────────────────────────────
     take_profit_pct: float = 5.0

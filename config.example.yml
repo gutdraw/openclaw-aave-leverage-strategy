@@ -176,5 +176,5 @@ min_open_hf: 1.30           # don't open a new position if projected HF would be
 # (USDC liquidation threshold ~78% on Aave Base v3; 3x short opens at ~1.17, too tight)
 short_max_leverage: 2.5     # BTC short exposure = leverage-1 = 1.5x
 short_min_open_hf: 1.25
-short_hf_defense_reduce: 1.20   # ~8% adverse BTC move from 2.5x open
-short_hf_defense_close: 1.10    # ~17% adverse BTC move from 2.5x open
+short_hf_defense_reduce: 1.10   # ~5% adverse BTC move from 3x open
+short_hf_defense_close: 1.06    # ~9% adverse BTC move from 3x open
