@@ -82,6 +82,10 @@ class TechSignal:
     macd_bull: Optional[bool] = (
         None  # MACD histogram > 0 on 1h; None = insufficient data
     )
+    adx: Optional[float] = (
+        None  # Average Directional Index on 1h; <20=ranging, >25=trending
+    )
+    volume_ratio: Optional[float] = None  # latest 1h volume / 20-bar avg; >3 = spike
 
 
 def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
@@ -92,17 +96,17 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
     Falls back to 1h-only scoring if higher timeframes are unavailable.
     """
     # ── 1h (required) ────────────────────────────────────────────────────
-    closes_1h, vols_1h, source = _fetch_tf(asset, 3600, 60, timeout)
+    closes_1h, vols_1h, highs_1h, lows_1h, source = _fetch_tf(asset, 3600, 60, timeout)
     if closes_1h is None or len(closes_1h) < _MIN_CANDLES:
         log.debug("ohlcv: 1h candles unavailable or insufficient for %s", asset)
         return None
 
     # ── intermediate ~4-6h (optional) ────────────────────────────────────
     # Coinbase supports 6h (21600s); Kraken supports 4h (240m).
-    closes_mid, _, _ = _fetch_tf(asset, 21600, 240, timeout)
+    closes_mid, _, _, _, _ = _fetch_tf(asset, 21600, 240, timeout)
 
     # ── 1d (optional) ────────────────────────────────────────────────────
-    closes_1d, _, _ = _fetch_tf(asset, 86400, 1440, timeout)
+    closes_1d, _, _, _, _ = _fetch_tf(asset, 86400, 1440, timeout)
 
     # ── Compute indicators ────────────────────────────────────────────────
     bull_1h = _ema_bull(closes_1h)
@@ -120,11 +124,17 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
     # ── Volume / momentum indicators on 1h ───────────────────────────────
     obv_b = _obv_bull(closes_1h, vols_1h) if vols_1h else None
     macd_b = (_macd_hist(closes_1h) > 0) if len(closes_1h) >= EMA_SLOW + 9 + 5 else None
+    adx_v = (
+        _adx(closes_1h, highs_1h, lows_1h)
+        if highs_1h and lows_1h and len(closes_1h) >= 30
+        else None
+    )
+    vol_ratio = _volume_ratio(vols_1h) if vols_1h and len(vols_1h) >= 21 else None
 
     score = _multi_tf_score(bull_1h, rsi_1h, bull_mid, bull_1d, obv_b, macd_b)
 
     log.debug(
-        "ohlcv %s: 1h_bull=%s mid_bull=%s 1d_bull=%s rsi=%.1f obv_bull=%s macd_bull=%s → score=%d",
+        "ohlcv %s: 1h_bull=%s mid_bull=%s 1d_bull=%s rsi=%.1f obv_bull=%s macd_bull=%s adx=%.1f vol_ratio=%.2f → score=%d",
         asset,
         bull_1h,
         bull_mid,
@@ -132,6 +142,8 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
         rsi_1h,
         obv_b,
         macd_b,
+        adx_v or 0.0,
+        vol_ratio or 1.0,
         score,
     )
 
@@ -145,6 +157,8 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
         tf_1d_bull=bull_1d,
         obv_bull=obv_b,
         macd_bull=macd_b,
+        adx=round(adx_v, 1) if adx_v is not None else None,
+        volume_ratio=round(vol_ratio, 2) if vol_ratio is not None else None,
     )
 
 
@@ -258,27 +272,33 @@ def _fetch_tf(
     coinbase_granularity: int,
     kraken_interval: int,
     timeout: int,
-) -> tuple[Optional[list[float]], Optional[list[float]], str]:
+) -> tuple[
+    Optional[list[float]],
+    Optional[list[float]],
+    Optional[list[float]],
+    Optional[list[float]],
+    str,
+]:
     """
     Fetch OHLCV for a given timeframe.
     Tries Coinbase first, then Kraken.
-    Returns (closes oldest→newest, volumes oldest→newest, source_name).
+    Returns (closes, volumes, highs, lows, source_name) oldest→newest.
     """
     result = _fetch_coinbase(asset, coinbase_granularity, timeout)
     if result is not None:
-        return result[0], result[1], "coinbase"
+        return result[0], result[1], result[2], result[3], "coinbase"
     result = _fetch_kraken(asset, kraken_interval, timeout)
     if result is not None:
-        return result[0], result[1], "kraken"
-    return None, None, "unavailable"
+        return result[0], result[1], result[2], result[3], "kraken"
+    return None, None, None, None, "unavailable"
 
 
 def _fetch_coinbase(
     asset: str, granularity: int, timeout: int
-) -> Optional[tuple[list[float], list[float]]]:
+) -> Optional[tuple[list[float], list[float], list[float], list[float]]]:
     """
     Fetch up to 300 candles from Coinbase Exchange at the given granularity (seconds).
-    Returns (closes, volumes) oldest→newest.
+    Returns (closes, volumes, highs, lows) oldest→newest.
     """
     pair = COINBASE_PAIR.get(asset)
     if not pair:
@@ -297,7 +317,9 @@ def _fetch_coinbase(
         candles_asc = list(reversed(candles))
         closes = [float(c[4]) for c in candles_asc]
         volumes = [float(c[5]) for c in candles_asc]
-        return closes, volumes
+        highs = [float(c[2]) for c in candles_asc]
+        lows = [float(c[1]) for c in candles_asc]
+        return closes, volumes, highs, lows
     except Exception as e:
         log.debug("ohlcv coinbase error (gran=%d) for %s: %s", granularity, asset, e)
         return None
@@ -305,10 +327,10 @@ def _fetch_coinbase(
 
 def _fetch_kraken(
     asset: str, interval: int, timeout: int
-) -> Optional[tuple[list[float], list[float]]]:
+) -> Optional[tuple[list[float], list[float], list[float], list[float]]]:
     """
     Fetch up to 720 candles from Kraken at the given interval (minutes).
-    Returns (closes, volumes) oldest→newest.
+    Returns (closes, volumes, highs, lows) oldest→newest.
     """
     pair = KRAKEN_PAIR.get(asset)
     if not pair:
@@ -327,7 +349,9 @@ def _fetch_kraken(
         # format: [time, open, high, low, close, vwap, volume, count] — oldest first
         closes = [float(c[4]) for c in result[key]]
         volumes = [float(c[6]) for c in result[key]]
-        return closes, volumes
+        highs = [float(c[2]) for c in result[key]]
+        lows = [float(c[3]) for c in result[key]]
+        return closes, volumes, highs, lows
     except Exception as e:
         log.debug("ohlcv kraken error (interval=%d) for %s: %s", interval, asset, e)
         return None
@@ -409,3 +433,63 @@ def _rsi(closes: list[float], period: int) -> float:
     if avg_loss == 0:
         return 100.0
     return 100 - (100 / (1 + avg_gain / avg_loss))
+
+
+def _adx(
+    closes: list[float], highs: list[float], lows: list[float], period: int = 14
+) -> float:
+    """
+    Average Directional Index (Wilder smoothing).
+    Measures trend strength regardless of direction.
+    <20 = ranging, 20-25 = transition, >25 = strong trend.
+    """
+    if len(closes) < period * 2 + 1:
+        return 0.0
+    tr_list, pdm_list, ndm_list = [], [], []
+    for i in range(1, len(closes)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        tr_list.append(tr)
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        pdm_list.append(up if up > down and up > 0 else 0.0)
+        ndm_list.append(down if down > up and down > 0 else 0.0)
+
+    def _wilder(values: list[float], n: int) -> list[float]:
+        out = [sum(values[:n])]
+        for v in values[n:]:
+            out.append(out[-1] - out[-1] / n + v)
+        return out
+
+    atr = _wilder(tr_list, period)
+    pdm_s = _wilder(pdm_list, period)
+    ndm_s = _wilder(ndm_list, period)
+
+    dx_list = []
+    for a, p, n in zip(atr, pdm_s, ndm_s):
+        if a == 0:
+            dx_list.append(0.0)
+            continue
+        pdi = 100 * p / a
+        ndi = 100 * n / a
+        dx_list.append(100 * abs(pdi - ndi) / (pdi + ndi) if pdi + ndi else 0.0)
+
+    if len(dx_list) < period:
+        return 0.0
+    adx = sum(dx_list[:period]) / period
+    for dx in dx_list[period:]:
+        adx = (adx * (period - 1) + dx) / period
+    return adx
+
+
+def _volume_ratio(volumes: list[float], lookback: int = 20) -> float:
+    """Ratio of latest 1h volume to the prior N-bar average.
+    >3 = potential capitulation spike; used as a counter-trend entry gate.
+    """
+    if len(volumes) < lookback + 1:
+        return 1.0
+    avg = sum(volumes[-lookback - 1 : -1]) / lookback
+    return volumes[-1] / avg if avg > 0 else 1.0
