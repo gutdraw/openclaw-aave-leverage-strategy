@@ -88,6 +88,9 @@ class BotConfig:
     min_hold_hours: float = 2.0  # minimum hours before signal reversal can trigger
     # Time-based exit: close after N days regardless of P&L (prevents carry drag + HF drift).
     max_hold_days: float = 1.0
+    # Separate max hold for long positions — longs need more time to develop.
+    # Falls back to max_hold_days if not set (0 = use max_hold_days).
+    long_max_hold_days: float = 0.0
     # TP suppression on strong signal: when False (default), take-profit is skipped if the
     # signal is still at maximum strength in the trade direction — let winners ride.
     # SL always applies. Set True to restore fixed-TP behaviour regardless of signal.

@@ -738,7 +738,12 @@ def run_cycle(
                 return cycle_entry
 
     # ── 5b. Time-based exit ───────────────────────────────────────────
-    if open_trade is not None and cfg.max_hold_days > 0:
+    _max_hold = (
+        cfg.long_max_hold_days
+        if open_direction == "long" and cfg.long_max_hold_days > 0
+        else cfg.max_hold_days
+    )
+    if open_trade is not None and _max_hold > 0:
         open_ts = open_trade.get("ts", "")
         if open_ts:
             try:
@@ -748,20 +753,20 @@ def run_cycle(
                     open_direction == "short"
                     and sig.score == 0
                     or open_direction == "long"
-                    and sig.score == 4
+                    and sig.score >= 3
                 )
-                if age_days >= cfg.max_hold_days and still_strong:
+                if age_days >= _max_hold and still_strong:
                     log.info(
                         "Time-based exit skipped: age %.1fd >= %.1fd but signal still strong (%s)",
                         age_days,
-                        cfg.max_hold_days,
+                        _max_hold,
                         sig.label,
                     )
-                elif age_days >= cfg.max_hold_days:
+                elif age_days >= _max_hold:
                     log.info(
                         "Time-based exit: position age %.1fd >= max_hold_days %.1fd",
                         age_days,
-                        cfg.max_hold_days,
+                        _max_hold,
                     )
                     res = executor.close_position(
                         pos_id, open_direction, supply_units, cfg, mcp, signer
