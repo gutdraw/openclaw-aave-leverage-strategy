@@ -1,0 +1,114 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                         QUICK REFERENCE: GATE ANALYSIS                         ║
+║                    Fear/Greed Threshold for cbBTC 3x Shorts                     ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+CURRENT STATE (T1: F&G ≤ 15 AND RSI < 35)
+───────────────────────────────────────────────────────────────────────────────
+Fire rate:              7.1% (58 blocks out of 821 signals)
+Block accuracy:         46.4% correct, 53.6% wrong
+Win rate if allowed:    58.7%
+Win rate if blocked:    53.6%
+Expected value:         NEGATIVE (costs more than saves)
+Status:                 NOT WORKING - Below 50% accuracy
+
+
+ALL THRESHOLDS RANKED BY DEFENSIVE ACCURACY (Block Win Rate)
+───────────────────────────────────────────────────────────────────────────────
+Rank  Threshold            Blocks    Blocked WR    Allowed WR    Decision
+────  ───────────────────  ────────  ────────────  ────────────  ────────────
+1.    T3: F&G≤25, RSI<35   187 (23%) 62.2%         57.3%         ✓ BEST ALT
+2.    T1: F&G≤15, RSI<35    58 (7%)  53.6%         58.7%         ✗ CURRENT
+3.    T2: F&G≤20, RSI<35    86 (10%) 52.4%         59.0%         ✗
+4.    T5: F&G≤20, RSI<40   185 (23%) 46.4%         61.8%         ✗ BAD
+5.    T4: F&G≤15, RSI<40   147 (18%) 44.8%         61.3%         ✗ WORST
+6.    T0: No gate          ───        ───           58.4%         ✓ BASELINE
+
+
+THE CORE PROBLEM (In 30 Seconds)
+───────────────────────────────────────────────────────────────────────────────
+When F&G ≤ 15 AND RSI < 35:
+  • Gate blocks the trade (prevents entry)
+  • 53.6% of the time: price FALLS (short would have been profitable)
+  • 46.4% of the time: price RISES (block saved loss)
+  
+Cost: Miss legitimate short profits on 53.6% of blocks
+Benefit: Avoid losses on only 46.4% of blocks
+
+Net result: NEGATIVE → More profit lost than saved
+
+
+TESTING RESULTS: What Happens With Each Threshold?
+───────────────────────────────────────────────────────────────────────────────
+
+Threshold    Fires    Correct    Wrong     Profit Missed    Protection Gained
+───────────  ─────    ────────   ─────     ─────────────    ──────────────────
+T0 (none)     0%        n/a       n/a          $0             $0
+T1 (now)      7%       46.4%     53.6%        HIGH            LOW
+T2             10%      52.4%     47.6%        MEDIUM          MEDIUM
+T3            23%       62.2%     37.8%        MEDIUM          MEDIUM
+T4            18%       44.8%     55.2%        VERY HIGH       VERY LOW
+T5            23%       46.4%     53.6%        VERY HIGH       VERY LOW
+
+
+SCENARIO: What Happened on Recent Blocks?
+───────────────────────────────────────────────────────────────────────────────
+
+Date            F&G  RSI   Action           24h Price    Outcome
+───────────────  ──  ────  ─────────────    ──────────   ─────────────────
+2026-03-29 22:51  9  26.9  BLOCKED          +1.74%       CORRECT (bounced)
+2026-04-02 03:22 12  34.7  BLOCKED          -0.18%       WRONG (fell→profit missed)
+2026-04-02 03:52 12  33.4  BLOCKED          +0.00%       CORRECT (bounced)
+2026-04-02 04:23 12  32.9  BLOCKED          +0.05%       CORRECT (bounced)
+2026-04-02 04:53 12  31.6  BLOCKED          +0.38%       CORRECT (bounced)
+2026-06-03 00:38 11  28.5  BLOCKED          -5.42%       WRONG (fell→profit missed)
+2026-06-03 01:08 11  26.7  BLOCKED          -6.26%       WRONG (fell→profit missed)
+
+→ See the pattern? More bounces, yes. But also real moves down. 
+
+
+CONCRETE RECOMMENDATION
+───────────────────────────────────────────────────────────────────────────────
+
+OPTION 1 (Recommended): DISABLE THE GATE [BEST]
+  Do this: Remove the F&G/RSI check entirely
+  Trade on: All strong_short signals without exception
+  Why: No edge (58.7% vs 58.4%), removes negative EV control
+  Risk: Accept that bounces happen—strategy already prices them in
+
+OPTION 2 (Conservative): LOWER THRESHOLD TO T3 [GOOD]
+  Do this: Change F&G ≤ 15 to F&G ≤ 25 (keep RSI < 35)
+  Trade on: strong_short unless F&G ≤ 25 AND RSI < 35
+  Why: 62.2% accuracy on blocks (better defensive)
+  Trade-off: Blocks 3x more often (~23% vs 7%)
+
+OPTION 3 (Not Recommended): KEEP T1 [AVOID]
+  Why: 53.6% false positive rate
+  Cost: Miss $X in profits every month
+  Benefit: Psychological comfort only
+
+
+THE DATA SPEAKS
+───────────────────────────────────────────────────────────────────────────────
+• 821 strong_short signals in 85 days
+• 58 gate fires (7.1% block rate)
+• 56 with 24h follow-up data
+  - 26 blocks were correct (46.4%)
+  - 30 blocks were wrong (53.6%)
+
+Verdict: Coin flip with a slight bias toward WRONG.
+
+
+FINAL ANSWER
+───────────────────────────────────────────────────────────────────────────────
+Question: Should we lower, raise, or remove the fear/greed threshold?
+
+Answer: REMOVE IT (disable the gate entirely).
+
+The gate provides no edge and costs you money through false blocks. The simplest,
+most profitable path is to trade all strong_short signals without this gate.
+
+If forced to keep a gate, switch to T3 (F&G ≤ 25) which has 62.2% accuracy,
+vs T1's current 53.6%.
+
+═══════════════════════════════════════════════════════════════════════════════

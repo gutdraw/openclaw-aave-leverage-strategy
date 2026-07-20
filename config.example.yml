@@ -85,6 +85,9 @@ min_hold_hours: 2.0            # minimum hours before signal reversal can trigge
 # Trailing stop remains active as a safety net alongside this.
 # Set to 0 to disable.
 max_hold_days: 1.0
+# Separate max hold for long positions (0 = use max_hold_days for both directions).
+# Longs typically need more time to develop than shorts.
+long_max_hold_days: 3.0
 
 # TP suppression on strong signal: when false (default), take-profit is skipped if the
 # signal is still at maximum strength (score=3 for longs, score=0 for shorts).
