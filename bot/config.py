@@ -138,12 +138,14 @@ class BotConfig:
     liquidity_escape_velocity: float = 0.05
 
     # ── Trailing stop ─────────────────────────────────────────────────
-    # Close if price drops more than trailing_stop_pct% from the highest
-    # price since position open. 0 = disabled.
-    # For longs: fires when price falls X% from peak (locks in gains).
-    # For shorts: fires when price rises X% from trough (locks in gains).
+    # Close if price retreats trailing_stop_pct% from the peak (long) or
+    # trough (short) since position open. 0 = disabled.
     # Evaluated after TP/SL, before signal reversal — min_hold_hours applies.
     trailing_stop_pct: float = 0.0
+    # Separate trailing stop for long positions (0 = use trailing_stop_pct).
+    # BTC's 2-3% daily range means 2.5% from peak fires on intraday noise;
+    # longs need more room — recommend 4.0% at 3x leverage.
+    long_trailing_stop_pct: float = 0.0
 
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True

@@ -628,15 +628,20 @@ def run_cycle(
     # Close if price retreats trailing_stop_pct% from the highest (long) or
     # lowest (short) price since the position was opened.
     # Respects min_hold_hours so it doesn't fire on the very first candle.
-    if open_trade is not None and cfg.trailing_stop_pct > 0:
+    _trail_pct = (
+        cfg.long_trailing_stop_pct
+        if open_direction == "long" and cfg.long_trailing_stop_pct > 0
+        else cfg.trailing_stop_pct
+    )
+    if open_trade is not None and _trail_pct > 0:
         peak = state.get_position_peak(entries)
         if peak > 0:
             if open_direction == "long":
                 trail_drawdown = 100.0 * (peak - data.price) / peak
-                trail_triggered = trail_drawdown >= cfg.trailing_stop_pct
+                trail_triggered = trail_drawdown >= _trail_pct
             else:  # short: price rising from trough is bad
                 trail_drawdown = 100.0 * (data.price - peak) / peak
-                trail_triggered = trail_drawdown >= cfg.trailing_stop_pct
+                trail_triggered = trail_drawdown >= _trail_pct
 
             if trail_triggered:
                 hold_ok = True
@@ -658,7 +663,7 @@ def run_cycle(
                         peak,
                         data.price,
                         trail_drawdown,
-                        cfg.trailing_stop_pct,
+                        _trail_pct,
                     )
                     res = executor.close_position(
                         pos_id, open_direction, supply_units, cfg, mcp, signer

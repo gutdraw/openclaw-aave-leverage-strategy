@@ -66,8 +66,12 @@ short_stop_loss_pct: 0.0    # override SL for shorts only (0 = use stop_loss_pct
 # Trailing stop: close if price retreats X% from the peak since entry.
 # For longs: fires when price drops X% from the highest price seen.
 # For shorts: fires when price rises X% from the lowest price seen.
-# 0 = disabled. Recommended: 2.5 for 3x leverage, 4.0 for 2x.
+# 0 = disabled.
 trailing_stop_pct: 2.5
+# Separate trailing stop for long positions (0 = use trailing_stop_pct).
+# BTC's 2-3% daily range means 2.5% from peak fires on intraday noise for longs.
+# 4.0% gives breathing room without sacrificing meaningful protection at 3x.
+long_trailing_stop_pct: 4.0
 
 # Signal reversal exit: close a position when the trend signal flips against it.
 # Trend-following literature strongly recommends this over fixed TP (which caps winners).
