@@ -64,14 +64,10 @@ long_stop_loss_pct: 0.0     # override SL for longs only (0 = use stop_loss_pct)
 short_stop_loss_pct: 0.0    # override SL for shorts only (0 = use stop_loss_pct)
 
 # Trailing stop: close if price retreats X% from the peak since entry.
-# For longs: fires when price drops X% from the highest price seen.
-# For shorts: fires when price rises X% from the lowest price seen.
-# 0 = disabled.
+# 0 = disabled. Direction-specific overrides take precedence when set (> 0).
 trailing_stop_pct: 2.5
-# Separate trailing stop for long positions (0 = use trailing_stop_pct).
-# BTC's 2-3% daily range means 2.5% from peak fires on intraday noise for longs.
-# 4.0% gives breathing room without sacrificing meaningful protection at 3x.
-long_trailing_stop_pct: 4.0
+long_trailing_stop_pct: 4.0   # longs: 4% gives room vs BTC's 2-3% daily range
+short_trailing_stop_pct: 5.0  # shorts: wider — TP handles most exits cleanly
 
 # Signal reversal exit: close a position when the trend signal flips against it.
 # Trend-following literature strongly recommends this over fixed TP (which caps winners).
@@ -113,9 +109,18 @@ post_trailing_stop_gate_hours: 48.0
 # Set 0 to disable.
 post_max_hold_gate_hours: 12.0
 
-# Require strong signal for short entries. When true, moderate_short entries are skipped.
-# Backtesting: moderate shorts 33% WR / -$10.70 vs strong shorts 50% WR / +$17.92.
-require_strong_short: true
+# Require strong signal for short entries. Superseded by moderate_short_min_7d_change.
+require_strong_short: false
+# Regime filter for moderate_short entries. Allow only when change_7d < this AND change_24h < 0.
+# Backtest: change_7d < -2% AND change_24h < 0 → 100% WR on 4 filtered trades.
+# Set to 0.0 to disable (falls back to require_strong_short).
+moderate_short_min_7d_change: -2.0
+
+# Long entry filters
+# Block longs when EMA is bearish (price below EMA). Backtest: 67% WR vs 17% (+50pp).
+require_ema_bull_long: true
+# Minimum RSI for long entries. Winners avg RSI 55.9 vs losers 37.1. 0 = disabled.
+min_rsi_long: 45.0
 
 # ---------------------------------------------------------------
 # NO-TRADE FILTERS

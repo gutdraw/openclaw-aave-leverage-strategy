@@ -631,6 +631,8 @@ def run_cycle(
     _trail_pct = (
         cfg.long_trailing_stop_pct
         if open_direction == "long" and cfg.long_trailing_stop_pct > 0
+        else cfg.short_trailing_stop_pct
+        if open_direction == "short" and cfg.short_trailing_stop_pct > 0
         else cfg.trailing_stop_pct
     )
     if open_trade is not None and _trail_pct > 0:
@@ -978,21 +980,66 @@ def run_cycle(
             except (KeyError, ValueError, TypeError):
                 pass
 
-    # Strong-signal-only filter for shorts: skip moderate_short entries when configured.
-    # Backtesting showed moderate shorts have 33% win rate vs 50% for strong_short,
-    # with all 9 moderate trades net losers across the live dataset.
+    # Moderate-short filter: regime-aware gate or legacy strong-only block.
+    if open_trade is None and sig.direction == "short" and sig.score != 0:
+        if cfg.moderate_short_min_7d_change < 0:
+            # Regime filter: allow moderate_short only in confirmed downtrends.
+            # Backtest: change_7d < -2% AND change_24h < 0 → 100% WR.
+            regime_ok = (
+                data.change_7d < cfg.moderate_short_min_7d_change
+                and data.change_24h < 0
+            )
+            if not regime_ok:
+                log.info(
+                    "moderate_short regime filter: 7d=%.1f%% (need <%.1f%%) "
+                    "24h=%.1f%% (need <0) — skip",
+                    data.change_7d,
+                    cfg.moderate_short_min_7d_change,
+                    data.change_24h,
+                )
+                cycle_entry["decision"] = "skip_moderate_short"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
+        elif cfg.require_strong_short:
+            log.info(
+                "require_strong_short: signal %s (score=%d) not strong_short — skip",
+                sig.label,
+                sig.score,
+            )
+            cycle_entry["decision"] = "skip_moderate_short"
+            state.append_entry(cfg.trades_file, cycle_entry)
+            return cycle_entry
+
+    # EMA bull gate: block long entries when price is below the EMA (downtrend).
+    # Backtest: EMA_bull=True → 67% WR vs 17% WR when False (+50pp edge).
     if (
         open_trade is None
-        and sig.direction == "short"
-        and cfg.require_strong_short
-        and sig.score != 0
+        and sig.direction == "long"
+        and cfg.require_ema_bull_long
+        and tech is not None
+        and not tech.ema_bull
+    ):
+        log.info("require_ema_bull_long: EMA bearish — skip long entry")
+        cycle_entry["decision"] = "skip_ema_bearish"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    # RSI gate: block long entries below minimum RSI threshold.
+    # Backtest: long winners avg RSI 55.9 vs losers 37.1 — avoid catching falling knives.
+    if (
+        open_trade is None
+        and sig.direction == "long"
+        and cfg.min_rsi_long > 0
+        and tech is not None
+        and tech.rsi is not None
+        and tech.rsi < cfg.min_rsi_long
     ):
         log.info(
-            "require_strong_short: signal %s (score=%d) not strong_short — skip",
-            sig.label,
-            sig.score,
+            "min_rsi_long: RSI %.1f < %.1f — skip long entry",
+            tech.rsi,
+            cfg.min_rsi_long,
         )
-        cycle_entry["decision"] = "skip_moderate_short"
+        cycle_entry["decision"] = "skip_rsi_low"
         state.append_entry(cfg.trades_file, cycle_entry)
         return cycle_entry
 

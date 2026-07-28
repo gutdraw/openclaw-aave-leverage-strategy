@@ -109,9 +109,21 @@ class BotConfig:
     # Set 0 to disable (allow immediate reopen).
     post_max_hold_gate_hours: float = 12.0
     # Require strong signal to open short positions. When True, moderate_short entries
-    # are skipped — only strong_short triggers a new short. Backtesting showed moderate
-    # shorts have 33% win rate vs 50% for strong, with all 9 moderate trades net losers.
+    # are skipped. Superseded by moderate_short_min_7d_change when that is set.
     require_strong_short: bool = True
+    # Regime filter for moderate_short entries (negative value = active).
+    # Allow moderate_short only when change_7d < this value AND change_24h < 0.
+    # Backtest: change_7d < -2% AND change_24h < 0 → 100% WR on 4 trades.
+    # Set to 0.0 to disable (fall back to require_strong_short behaviour).
+    moderate_short_min_7d_change: float = 0.0
+
+    # ── Long entry filters ────────────────────────────────────────────────
+    # Block long entries when the EMA is bearish (price below EMA).
+    # Backtest: EMA_bull=True → 67% WR vs 17% WR when False (+50pp edge).
+    require_ema_bull_long: bool = False
+    # Minimum RSI at long entry (0 = disabled). Winners avg RSI 55.9 vs losers 37.1.
+    # Recommend 45.0 — avoids catching falling knives on oversold dips.
+    min_rsi_long: float = 0.0
 
     # ── On-chain ──────────────────────────────────────────────────────────
     # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).
@@ -142,10 +154,11 @@ class BotConfig:
     # trough (short) since position open. 0 = disabled.
     # Evaluated after TP/SL, before signal reversal — min_hold_hours applies.
     trailing_stop_pct: float = 0.0
-    # Separate trailing stop for long positions (0 = use trailing_stop_pct).
-    # BTC's 2-3% daily range means 2.5% from peak fires on intraday noise;
-    # longs need more room — recommend 4.0% at 3x leverage.
+    # Direction-specific overrides (0 = use trailing_stop_pct).
+    # Longs: recommend 4.0% at 3x — BTC's 2-3% daily range fires 2.5% on noise.
+    # Shorts: recommend 5.0% — shorts exit cleanly via TP; trailing stop fires early.
     long_trailing_stop_pct: float = 0.0
+    short_trailing_stop_pct: float = 0.0
 
     # ── Mode ──────────────────────────────────────────────────────────────
     paper_trading: bool = True
