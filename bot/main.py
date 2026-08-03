@@ -189,7 +189,7 @@ def _ensure_wallet_token(
     Ensure the wallet holds the correct token before opening a position.
 
     - Short: needs USDC as seed. If wallet only has the borrow asset (or cfg.asset),
-      swap just enough asset → USDC to cover seed_usd.
+      or has a mixture of USDC and that asset, swap the asset portion to USDC.
     - Long: needs the supply asset. If wallet only has USDC, swap USDC → asset.
 
     Returns:
@@ -208,42 +208,53 @@ def _ensure_wallet_token(
         1.002  # 0.2% buffer — covers 0.05% Uniswap v3 fee + ~0.1% execution price drift
     )
 
+    def _swap_asset_to_usdc(tok: str, qty: float) -> None:
+        swap_hash = signer.execute_steps(
+            _inject_swap_approve(mcp.swap(tok, "USDC", qty))
+        )
+        cycle_entry["pre_swap"] = f"{qty:.6f} {tok} → USDC (tx={swap_hash})"
+        log.info("waiting for swap confirmation: %s", swap_hash)
+        signer.wait_for_receipt(swap_hash)
+        time.sleep(
+            3
+        )  # brief pause for RPC propagation before prepare_open reads balance
+        log.info("swap confirmed — proceeding to open")
+
     if direction == "short":
         # Short flash-loan loop needs USDC as collateral seed.
         # Prefer spending the asset (cbBTC/WETH) first so USDC stays as the
         # standing reserve. Only use USDC directly if asset balance is insufficient.
         usdc_bal = float(wb.get("USDC", 0) or 0)
 
-        for tok in (cfg.short_borrow_asset, cfg.asset):
+        asset_tokens = tuple(dict.fromkeys((cfg.short_borrow_asset, cfg.asset)))
+        for tok in asset_tokens:
             tok_bal = float(wb.get(tok, 0) or 0)
             tok_val_usd = tok_bal * data.price
             if tok_val_usd >= seed_usd * 0.95:
                 # Swap ALL the asset to USDC — a short means we want zero
                 # long exposure in the wallet, not just enough for the seed.
-                swap_qty = tok_bal
-                log.info(
-                    "Swapping %.6f %s → USDC (all, seed=%.2f, eliminating long exposure)",
-                    swap_qty,
-                    tok,
-                    seed_usd,
-                )
-                swap_hash = signer.execute_steps(
-                    _inject_swap_approve(mcp.swap(tok, "USDC", swap_qty))
-                )
-                cycle_entry["pre_swap"] = (
-                    f"{swap_qty:.6f} {tok} → USDC (tx={swap_hash})"
-                )
-                log.info("waiting for swap confirmation: %s", swap_hash)
-                signer.wait_for_receipt(swap_hash)
-                time.sleep(
-                    3
-                )  # brief pause for RPC propagation before prepare_open reads balance
-                log.info("swap confirmed — proceeding to open")
+                _swap_asset_to_usdc(tok, tok_bal)
                 return None
 
         # Asset alone not enough — fall back to USDC if it covers the seed
         if usdc_bal >= seed_usd * 0.95:
             return True  # use USDC directly, no swap needed
+
+        # USDC and the asset can jointly cover the seed even when neither
+        # balance is sufficient on its own. Convert all available asset
+        # balances before opening the short so the combined collateral is
+        # actually usable as USDC.
+        total_wallet_usd = usdc_bal + sum(
+            float(wb.get(tok, 0) or 0) * data.price
+            for tok in asset_tokens
+            if tok != "USDC"
+        )
+        if total_wallet_usd >= seed_usd * 0.95:
+            for tok in asset_tokens:
+                tok_bal = float(wb.get(tok, 0) or 0)
+                if tok != "USDC" and tok_bal > 0:
+                    _swap_asset_to_usdc(tok, tok_bal)
+            return None
 
         log.warning(
             "Insufficient wallet funds for short: need %.2f USDC seed, "
