@@ -20,8 +20,9 @@ Three signals, all read-only (eth_call / eth_getLogs), free public RPC:
      Both states mean we cannot close via flash loan and should exit
      while we still can.
 
-All fields are Optional — if the RPC call fails we return None and the
-corresponding filter in filters.py is simply skipped.
+  All fields are Optional so callers can log partial results, but ``available``
+  is false unless every safety read succeeds. Live callers must fail closed on
+  an unavailable safety snapshot.
 """
 
 from __future__ import annotations
@@ -81,11 +82,15 @@ class OnChainData:
     usdc_utilization: Optional[float]  # 0.0–1.0  e.g. 0.88 = 88% utilised
     asset_utilization: Optional[float]  # supply-side utilization of the trade asset
     recent_liquidations: Optional[int]  # LiquidationCall count in last ~5 min
+    available: bool = False
     # Reserve status flags — None means RPC call failed (treated as safe/unknown)
     asset_frozen: Optional[bool] = None  # supply asset frozen (no new borrows/deposits)
     asset_paused: Optional[bool] = None  # supply asset paused (all ops blocked)
     borrow_asset_frozen: Optional[bool] = None  # borrow asset (USDC) frozen
     borrow_asset_paused: Optional[bool] = None  # borrow asset (USDC) paused
+    short_asset_utilization: Optional[float] = None
+    short_asset_frozen: Optional[bool] = None
+    short_asset_paused: Optional[bool] = None
 
 
 def fetch(
@@ -93,13 +98,16 @@ def fetch(
     rpc_url: str = "https://mainnet.base.org",
     lookback_blocks: int = _LOOKBACK_BLOCKS_DEFAULT,
     borrow_asset: str = "USDC",
+    short_asset: Optional[str] = None,
 ) -> OnChainData:
     """
-    Fetch on-chain Aave v3 state from Base. Never raises — returns None fields on error.
+    Fetch on-chain Aave v3 state from Base. Never raises — returns unavailable
+    data on error so live callers can fail closed.
     A single Web3 connection is created per call (read-only, no wallet needed).
     """
     usdc_util = asset_util = recent_liq = None
     asset_frozen = asset_paused = borrow_frozen = borrow_paused = None
+    short_asset_util = short_asset_frozen = short_asset_paused = None
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
 
@@ -112,11 +120,31 @@ def fetch(
         # Paused = all operations blocked including repay/withdraw.
         asset_frozen, asset_paused = _reserve_flags(w3, asset)
         borrow_frozen, borrow_paused = _reserve_flags(w3, borrow_asset)
+        short_asset_name = short_asset or asset
+        short_asset_util = _utilization(w3, short_asset_name)
+        short_asset_frozen, short_asset_paused = _reserve_flags(w3, short_asset_name)
 
     except Exception as e:
         log.debug("onchain.fetch error: %s", e)
 
+    available = all(
+        value is not None
+        for value in (
+            usdc_util,
+            asset_util,
+            recent_liq,
+            asset_frozen,
+            asset_paused,
+            borrow_frozen,
+            borrow_paused,
+            short_asset_util,
+            short_asset_frozen,
+            short_asset_paused,
+        )
+    )
+
     return OnChainData(
+        available=available,
         usdc_utilization=usdc_util,
         asset_utilization=asset_util,
         recent_liquidations=recent_liq,
@@ -124,6 +152,9 @@ def fetch(
         asset_paused=asset_paused,
         borrow_asset_frozen=borrow_frozen,
         borrow_asset_paused=borrow_paused,
+        short_asset_utilization=short_asset_util,
+        short_asset_frozen=short_asset_frozen,
+        short_asset_paused=short_asset_paused,
     )
 
 

@@ -39,68 +39,9 @@ import bot.sizing as sizing
 import bot.state as state
 from bot.config import BotConfig
 from bot.mcp_client import MCPClient
+from bot.swaps import inject_swap_approve
 
 log = logging.getLogger(__name__)
-
-# Uniswap V3 SwapRouter02 on Base — used for client-side approve injection
-_SWAP_ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481"
-_UINT256_MAX = str(2**256 - 1)
-
-
-def _inject_swap_approve(resp: dict) -> dict:
-    """Ensure an MCP swap response includes an ERC20 approve step.
-
-    If the server already returns an approve step targeting the swap router,
-    this is a no-op.  Otherwise it prepends one so *execute_steps* can check
-    the on-chain allowance and send the approval when needed.
-    """
-    steps = resp.get("transaction_steps", [])
-    if not steps:
-        return resp
-
-    swap_step = next((s for s in steps if s.get("type") == "swap"), None)
-    if swap_step is None:
-        return resp
-    # Native ETH swaps don't need approval
-    if swap_step.get("use_eth"):
-        return resp
-
-    has_approve = False
-    for s in steps:
-        if (
-            s.get("type") == "approve"
-            and s.get("args", [None])[0]
-            and s["args"][0].lower() == _SWAP_ROUTER.lower()
-        ):
-            has_approve = True
-            # Ensure the gas limit is sufficient for proxy tokens like cbBTC
-            if s.get("gas", 0) < 100_000:
-                s["gas"] = 100_000
-    if has_approve:
-        return resp
-
-    # Derive tokenIn address from the swap step args (first element of the tuple)
-    swap_args = swap_step.get("args", [[]])
-    token_in = (
-        swap_args[0][0]
-        if swap_args and isinstance(swap_args[0], list) and swap_args[0]
-        else None
-    )
-    if not token_in:
-        return resp
-
-    approve_step = {
-        "step": 0,
-        "title": "Approve token for Swap",
-        "type": "approve",
-        "contract": token_in,
-        "abi_fn": "approve(address,uint256)",
-        "args": [_SWAP_ROUTER, _UINT256_MAX],
-        "gas": 100_000,
-    }
-    resp["transaction_steps"] = [approve_step] + steps
-    return resp
-
 
 # Aave v3 Base liquidation thresholds per supply asset (basis: on-chain reserve config)
 _LIQ_THRESHOLD: dict[str, float] = {
@@ -154,11 +95,122 @@ def _paper_health_factor(
         return (leverage * supply * price * lt) / borrow
 
 
+def _projected_health_factor(
+    direction: str, price: float, size, cfg: BotConfig
+) -> float:
+    """Estimate the opening HF from the requested seed and effective leverage."""
+    if price <= 0 or size.supply <= 0 or size.borrow <= 0:
+        return 0.0
+    return _paper_health_factor(
+        {
+            "direction": direction,
+            "supply": size.supply,
+            "borrow": size.borrow,
+            "leverage": cfg.leverage_for(direction),
+        },
+        price,
+        cfg,
+    )
+
+
 def _position_id_for(direction: str, cfg: BotConfig, raw_cfg: dict) -> str:
     """Return the Aave position_id string for the given direction."""
     if direction == "short":
         return raw_cfg.get("short_position_id", f"USDC/{cfg.short_borrow_asset}")
     return raw_cfg.get("position_id", f"{cfg.asset}/USDC")
+
+
+def _aave_positions(position_data: dict) -> list[dict]:
+    raw_positions = (position_data.get("aavePositions") or {}).get("positions")
+    if not isinstance(raw_positions, list):
+        return []
+    return [position for position in raw_positions if isinstance(position, dict)]
+
+
+def _find_chain_position(
+    position_data: dict,
+    expected_position_id: str,
+    direction: str,
+    cfg: BotConfig,
+) -> Optional[dict]:
+    """Match a local position to one chain position; never guess among many."""
+    positions = _aave_positions(position_data)
+    if not positions:
+        return None
+
+    for position in positions:
+        for key in ("positionId", "position_id", "id"):
+            value = position.get(key)
+            if isinstance(value, str) and value == expected_position_id:
+                return position
+
+    expected_supply = "USDC" if direction == "short" else cfg.asset
+    expected_borrow = (
+        cfg.short_borrow_asset if direction == "short" else cfg.borrow_asset
+    )
+    if len(positions) == 1:
+        position = positions[0]
+        declared_supply = str(
+            position.get("supplyAsset")
+            or position.get("supply_asset")
+            or position.get("collateralAsset")
+            or ""
+        )
+        declared_borrow = str(
+            position.get("borrowAsset")
+            or position.get("borrow_asset")
+            or position.get("debtAsset")
+            or ""
+        )
+        if (declared_supply and declared_supply.lower() != expected_supply.lower()) or (
+            declared_borrow and declared_borrow.lower() != expected_borrow.lower()
+        ):
+            return None
+        return position
+
+    matches: list[dict] = []
+    for position in positions:
+        supply = str(
+            position.get("supplyAsset")
+            or position.get("supply_asset")
+            or position.get("collateralAsset")
+            or ""
+        )
+        borrow = str(
+            position.get("borrowAsset")
+            or position.get("borrow_asset")
+            or position.get("debtAsset")
+            or ""
+        )
+        if (
+            supply.lower() == expected_supply.lower()
+            and borrow.lower() == expected_borrow.lower()
+        ):
+            matches.append(position)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _chain_position_size(
+    position: Optional[dict],
+    direction: str,
+    cfg: BotConfig,
+    leverage: Optional[float] = None,
+) -> tuple[float, float]:
+    if position is None:
+        return 0.0, 0.0
+    try:
+        atoken_balance = float(position.get("aTokenBalance", 0) or 0)
+        variable_debt = float(position.get("variableDebt", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    if atoken_balance <= 0 or variable_debt <= 0:
+        return 0.0, 0.0
+    effective_leverage = leverage or cfg.leverage_for(direction)
+    if effective_leverage <= 0:
+        return 0.0, 0.0
+    if direction == "long":
+        return atoken_balance / effective_leverage, variable_debt
+    return atoken_balance, variable_debt
 
 
 def _build_signer(cfg: BotConfig):
@@ -169,8 +221,13 @@ def _build_signer(cfg: BotConfig):
         raise RuntimeError("PRIVATE_KEY is required in live mode")
     from bot.signer import Signer
 
-    rpc = os.environ.get("RPC_URL", "https://mainnet.base.org")
-    return Signer(rpc_url=rpc, private_key=pk)
+    rpc = os.environ.get("RPC_URL", cfg.rpc_url)
+    signer = Signer(rpc_url=rpc, private_key=pk)
+    if signer.address.lower() != cfg.user_address.lower():
+        raise RuntimeError(
+            "PRIVATE_KEY address does not match configured user_address; refusing live mode"
+        )
+    return signer
 
 
 # ── Pre-open token swap ───────────────────────────────────────────────────────
@@ -197,7 +254,7 @@ def _ensure_wallet_token(
         None  — swap executed successfully
         False — insufficient wallet funds; caller should skip and log cycle_entry
 
-    Adds 1.5% to swap amount to cover DEX slippage.
+    Adds a 0.2% input buffer to swap amounts to cover DEX fees and drift.
     """
     wb = (
         data.position_data.get("tokenBalances")
@@ -210,7 +267,7 @@ def _ensure_wallet_token(
 
     def _swap_asset_to_usdc(tok: str, qty: float) -> None:
         swap_hash = signer.execute_steps(
-            _inject_swap_approve(mcp.swap(tok, "USDC", qty))
+            inject_swap_approve(mcp.swap(tok, "USDC", qty))
         )
         cycle_entry["pre_swap"] = f"{qty:.6f} {tok} → USDC (tx={swap_hash})"
         log.info("waiting for swap confirmation: %s", swap_hash)
@@ -223,46 +280,56 @@ def _ensure_wallet_token(
     if direction == "short":
         # Short flash-loan loop needs USDC as collateral seed.
         # Prefer spending the asset (cbBTC/WETH) first so USDC stays as the
-        # standing reserve. Only use USDC directly if asset balance is insufficient.
+        # standing reserve, but only swap the amount needed for this position.
+        # Do not liquidate unrelated wallet balances just to make the bot flat.
         usdc_bal = float(wb.get("USDC", 0) or 0)
 
         asset_tokens = tuple(dict.fromkeys((cfg.short_borrow_asset, cfg.asset)))
-        for tok in asset_tokens:
-            tok_bal = float(wb.get(tok, 0) or 0)
-            tok_val_usd = tok_bal * data.price
-            if tok_val_usd >= seed_usd * 0.95:
-                # Swap ALL the asset to USDC — a short means we want zero
-                # long exposure in the wallet, not just enough for the seed.
-                _swap_asset_to_usdc(tok, tok_bal)
-                return None
-
-        # Asset alone not enough — fall back to USDC if it covers the seed
-        if usdc_bal >= seed_usd * 0.95:
-            return True  # use USDC directly, no swap needed
-
-        # USDC and the asset can jointly cover the seed even when neither
-        # balance is sufficient on its own. Convert all available asset
-        # balances before opening the short so the combined collateral is
-        # actually usable as USDC.
+        asset_balances = {
+            tok: max(float(wb.get(tok, 0) or 0), 0.0) for tok in asset_tokens
+        }
         total_wallet_usd = usdc_bal + sum(
             float(wb.get(tok, 0) or 0) * data.price
             for tok in asset_tokens
             if tok != "USDC"
         )
-        if total_wallet_usd >= seed_usd * 0.95:
-            for tok in asset_tokens:
-                tok_bal = float(wb.get(tok, 0) or 0)
-                if tok != "USDC" and tok_bal > 0:
-                    _swap_asset_to_usdc(tok, tok_bal)
+
+        if total_wallet_usd < seed_usd * 0.995:
+            log.warning(
+                "Insufficient wallet funds for short: need %.2f USD, wallet=%.2f",
+                seed_usd,
+                total_wallet_usd,
+            )
+            cycle_entry["decision"] = "skip_insufficient_funds"
+            return False
+
+        shortfall_usd = max(seed_usd - usdc_bal, 0.0)
+        if shortfall_usd <= seed_usd * 0.005:
+            return True
+
+        swapped = False
+        for tok in asset_tokens:
+            tok_bal = asset_balances[tok]
+            if tok == "USDC" or tok_bal <= 0 or shortfall_usd <= 0:
+                continue
+            available_usd = tok_bal * data.price
+            # Add a small input buffer for DEX fees/price movement, while
+            # never requesting more than the required shortfall.
+            swap_usd = min(available_usd, shortfall_usd * _SLIPPAGE)
+            if swap_usd <= 0:
+                continue
+            _swap_asset_to_usdc(tok, swap_usd / data.price)
+            swapped = True
+            shortfall_usd = max(0.0, shortfall_usd - swap_usd / _SLIPPAGE)
+
+        if swapped and shortfall_usd <= seed_usd * 0.005:
             return None
 
         log.warning(
-            "Insufficient wallet funds for short: need %.2f USDC seed, "
-            "wallet USDC=%.2f %s=%.6f — skip",
+            "Wallet funding swaps did not cover short seed: need %.2f USD, "
+            "remaining shortfall=%.2f — skip",
             seed_usd,
-            usdc_bal,
-            cfg.short_borrow_asset,
-            float(wb.get(cfg.short_borrow_asset, 0) or 0),
+            shortfall_usd,
         )
         cycle_entry["decision"] = "skip_insufficient_funds"
         return False
@@ -288,7 +355,7 @@ def _ensure_wallet_token(
                 supply_needed_usd,
             )
             swap_hash = signer.execute_steps(
-                _inject_swap_approve(mcp.swap("USDC", cfg.asset, swap_usd))
+                inject_swap_approve(mcp.swap("USDC", cfg.asset, swap_usd))
             )
             cycle_entry["pre_swap"] = (
                 f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
@@ -349,6 +416,7 @@ def run_cycle(
         mcp,
         rpc_url=cfg.rpc_url,
         onchain_lookback_blocks=cfg.onchain_lookback_blocks,
+        short_borrow_asset=cfg.short_borrow_asset,
     )
 
     # In paper mode, replace on-chain HF with a simulated value derived from
@@ -383,6 +451,7 @@ def run_cycle(
         "direction": sig.direction,
         "score": sig.score,
         "borrow_apr": data.borrow_apr,
+        "short_borrow_apr": data.short_borrow_apr,
         "health_factor": data.health_factor,
         "btc_dominance_pct": data.btc_dominance,
         "funding_rate": data.funding_rate,
@@ -393,6 +462,9 @@ def run_cycle(
         else None,
         "asset_utilization": round(data.asset_utilization, 4)
         if data.asset_utilization is not None
+        else None,
+        "short_asset_utilization": round(data.short_asset_utilization, 4)
+        if data.short_asset_utilization is not None
         else None,
         "recent_liquidations": data.recent_liquidations,
         "usdc_supply_apy": data.usdc_supply_apy,
@@ -409,6 +481,8 @@ def run_cycle(
             else None
         ),
         "wallet_collateral_usd": round(data.wallet_collateral_usd, 2),
+        "position_data_available": data.position_available,
+        "onchain_data_available": data.onchain_available,
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
         "cg_signal": cg_sig.label,
@@ -423,6 +497,55 @@ def run_cycle(
         "tech_adx": tech.adx if tech is not None else None,
         "tech_volume_ratio": tech.volume_ratio if tech is not None else None,
     }
+
+    if not cfg.paper_trading and (
+        not data.position_available or not data.onchain_available
+    ):
+        log.warning(
+            "Live safety snapshot incomplete (position=%s onchain=%s) — skipping cycle",
+            data.position_available,
+            data.onchain_available,
+        )
+        cycle_entry["decision"] = "skip_safety_data_unavailable"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    chain_position: Optional[dict] = None
+    if not cfg.paper_trading:
+        if open_trade is not None:
+            expected_id = str(open_trade.get("position_id") or "")
+            chain_position = _find_chain_position(
+                data.position_data,
+                expected_id,
+                open_trade.get("direction", "long"),
+                cfg,
+            )
+            if chain_position is None:
+                log.error(
+                    "Local open trade does not match exactly one on-chain position — "
+                    "skipping without acting"
+                )
+                cycle_entry["decision"] = "skip_state_reconciliation"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
+            chain_supply, chain_borrow = _chain_position_size(
+                chain_position,
+                open_trade.get("direction", "long"),
+                cfg,
+                float(
+                    open_trade.get("leverage")
+                    or cfg.leverage_for(open_trade.get("direction", "long"))
+                ),
+            )
+            if chain_supply > 0 and chain_borrow > 0:
+                eff_supply, eff_borrow = chain_supply, chain_borrow
+        elif _aave_positions(data.position_data):
+            log.error(
+                "On-chain Aave position exists while local state is flat — skipping"
+            )
+            cycle_entry["decision"] = "skip_state_reconciliation"
+            state.append_entry(cfg.trades_file, cycle_entry)
+            return cycle_entry
 
     # Derive the position_id for the current open trade (if any)
     open_direction = (
@@ -447,7 +570,7 @@ def run_cycle(
             res = executor.close_position(
                 pos_id,
                 open_direction,
-                float(open_trade.get("supply", 0)),
+                eff_supply,
                 cfg,
                 mcp,
                 signer,
@@ -468,12 +591,42 @@ def run_cycle(
 
         if hf < hf_reduce:
             log.warning("HF %.3f < %.3f — reduce", hf, hf_reduce)
-            target_lev = max(cfg.leverage / 2, 1.5)
-            executor.reduce_position(
+            target_lev = max(cfg.leverage_for(open_direction) / 2, 1.5)
+            res = executor.reduce_position(
                 pos_id, open_direction, target_lev, cfg, mcp, signer
             )
+            reduce_entry = {
+                "type": "trade",
+                "action": "reduce",
+                "ts": state.now_iso(),
+                "asset": cfg.asset,
+                "direction": open_direction,
+                "position_id": pos_id,
+                "target_leverage": target_lev,
+                "price": data.price,
+                "paper": cfg.paper_trading,
+                "tx_hash": res.tx_hash,
+            }
+            if not cfg.paper_trading:
+                try:
+                    reduced_data = mcp.get_position()
+                    reduced_position = _find_chain_position(
+                        reduced_data, pos_id, open_direction, cfg
+                    )
+                    reduced_supply, reduced_borrow = _chain_position_size(
+                        reduced_position, open_direction, cfg, target_lev
+                    )
+                    if reduced_supply > 0 and reduced_borrow > 0:
+                        reduce_entry.update(
+                            supply=reduced_supply,
+                            borrow=reduced_borrow,
+                            reconciled=True,
+                        )
+                except Exception as e:
+                    log.warning("post-reduce reconciliation failed: %s", e)
             cycle_entry["decision"] = "hf_reduce"
             state.append_entry(cfg.trades_file, cycle_entry)
+            state.append_entry(cfg.trades_file, reduce_entry)
             return cycle_entry
 
     # ── 4a. Liquidity escape ──────────────────────────────────────────────
@@ -487,7 +640,8 @@ def run_cycle(
     # Also close immediately on Aave governance freeze/pause of any involved
     # asset (e.g. KelpDAO-style incident).
     if open_trade is not None and not cfg.paper_trading:
-        prev_usdc_util, prev_asset_util = state.get_last_utilizations(entries)
+        prev_usdc_util, _ = state.get_last_utilizations(entries)
+        prev_short_asset_util = state.get_last_short_asset_utilization(entries)
 
         if open_direction == "long":
             flash_util = data.usdc_utilization
@@ -496,10 +650,14 @@ def run_cycle(
             flash_paused = data.borrow_asset_paused  # USDC paused → nothing works
             supply_paused = data.asset_paused  # supply asset paused → can't withdraw
         else:
-            flash_util = data.asset_utilization
-            prev_flash_util = prev_asset_util
-            flash_frozen = data.asset_frozen  # cbBTC frozen → no flash loan
-            flash_paused = data.asset_paused  # cbBTC paused → nothing works
+            flash_util = data.short_asset_utilization
+            prev_flash_util = prev_short_asset_util
+            flash_frozen = (
+                data.short_asset_frozen
+            )  # borrowed asset frozen → no flash loan
+            flash_paused = (
+                data.short_asset_paused
+            )  # borrowed asset paused → nothing works
             supply_paused = data.borrow_asset_paused  # USDC paused → can't withdraw
 
         escape_reason: Optional[str] = None
@@ -547,7 +705,7 @@ def run_cycle(
             res = executor.close_position(
                 pos_id,
                 open_direction,
-                float(open_trade.get("supply", 0)),
+                eff_supply,
                 cfg,
                 mcp,
                 signer,
@@ -1095,9 +1253,13 @@ def run_cycle(
                     )
 
         min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
-        if data.health_factor < min_hf and data.health_factor != 999.0:
+        projected_hf = _projected_health_factor(sig.direction, data.price, size, cfg)
+        cycle_entry["projected_health_factor"] = round(projected_hf, 4)
+        if projected_hf < min_hf:
             log.info(
-                "HF %.3f below min_open_hf %.3f — skip", data.health_factor, min_hf
+                "projected HF %.3f below min_open_hf %.3f — skip",
+                projected_hf,
+                min_hf,
             )
             cycle_entry["decision"] = "skip_min_hf"
             state.append_entry(cfg.trades_file, cycle_entry)
@@ -1128,9 +1290,8 @@ def run_cycle(
                     if _attempt > 0:
                         _time.sleep(4)
                     pos = mcp.get_position()
-                    aave_pos = (pos.get("aavePositions") or {}).get("positions") or []
-                    if aave_pos:
-                        p = aave_pos[0]
+                    p = _find_chain_position(pos, new_pos_id, sig.direction, cfg)
+                    if p is not None:
                         atoken_bal = float(p.get("aTokenBalance", size.supply))
                         # P&L formula uses supply as 1×seed (equity portion).
                         # For longs the aToken is leverage×seed — divide back to seed.
@@ -1160,6 +1321,11 @@ def run_cycle(
                                 size.borrow,
                             )
                         break  # got a valid position — done
+                    if _aave_positions(pos):
+                        log.warning(
+                            "post-open reconciliation found ambiguous positions; "
+                            "keeping computed size"
+                        )
                     # positions empty — tx may not be indexed yet, retry
                     log.debug(
                         "post-open reconciliation: empty positions on attempt %d",
@@ -1220,7 +1386,7 @@ def _close_trade_entry(
     if eff_entry_price > 0:
         effective["entry_price"] = eff_entry_price
     realised = pnl.compute_realised(effective, close_price)
-    return {
+    entry = {
         "type": "trade",
         "action": "close",
         "ts": state.now_iso(),
@@ -1237,6 +1403,9 @@ def _close_trade_entry(
         "paper": cfg.paper_trading,
         "tx_hash": res.tx_hash,
     }
+    if isinstance(res.raw, dict) and res.raw.get("post_close_swap_error"):
+        entry["post_close_swap_error"] = res.raw["post_close_swap_error"]
+    return entry
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1263,6 +1432,7 @@ def main() -> None:
 
     cfg = BotConfig.load(args.config)
     raw_cfg = yaml.safe_load(open(args.config).read())
+    _instance_lock = state.acquire_process_lock(cfg.trades_file)
 
     mode = "PAPER" if cfg.paper_trading else "LIVE"
     log.info(

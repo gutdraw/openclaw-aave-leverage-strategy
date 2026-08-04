@@ -34,9 +34,43 @@ import time
 from eth_account import Account
 from web3 import Web3
 
+from bot.onchain import AAVE_POOL_BASE, _ASSET_ADDR, _ATOKEN, _VARDEBT
+
 log = logging.getLogger(__name__)
 
-_UINT256_MAX = 2**256 - 1
+_BASE_CHAIN_ID = 8453
+_LEVERAGE_ROUTER = "0x4A60C1E7d78DA2A61007fE21d282a859D3906724"
+_LEVERAGE_VAULT = "0xf2A51d441E6bA96c37fD0024115DccF03764478f"
+_SWAP_ROUTER = "0x2626664c2603336E57B271c5C0b26F421741e481"
+
+_KNOWN_TOKEN_CONTRACTS = {
+    address.lower()
+    for address in (*_ASSET_ADDR.values(), *_ATOKEN.values(), *_VARDEBT.values())
+}
+_ALLOWED_TARGETS = {
+    address.lower()
+    for address in (
+        AAVE_POOL_BASE,
+        _LEVERAGE_ROUTER,
+        _LEVERAGE_VAULT,
+        _SWAP_ROUTER,
+        *_KNOWN_TOKEN_CONTRACTS,
+    )
+}
+_ALLOWED_FUNCTIONS = {
+    "approve",
+    "approveDelegation",
+    "exactInput",
+    "exactInputSingle",
+    "openPosition",
+    "closePosition",
+    "increaseLeverage",
+    "reduceLeverage",
+    "openLeverage",
+    "closeLeverage",
+    "increasePosition",
+    "reducePosition",
+}
 
 
 def _split_sig_types(sig: str) -> list[str]:
@@ -159,12 +193,14 @@ class Signer:
                 current = self._erc20_allowance(contract, self.address, spender)
         except Exception as exc:
             log.warning(
-                "allowance check failed for %s on %s: %s — sending tx anyway",
+                "allowance check failed for %s on %s: %s — refusing to send",
                 fn_name,
                 contract,
                 exc,
             )
-            return False
+            raise RuntimeError(
+                f"cannot verify {fn_name} allowance for {contract}; refusing to send"
+            ) from exc
 
         if current >= amount:
             log.info(
@@ -176,6 +212,123 @@ class Signer:
             )
             return True
         return False
+
+    @staticmethod
+    def _require_address(value: object, field: str) -> str:
+        if not isinstance(value, str) or not Web3.is_address(value):
+            raise ValueError(f"invalid transaction {field}: {value!r}")
+        return value.lower()
+
+    def _validate_swap_step(self, step: dict, target: str) -> None:
+        if target != _SWAP_ROUTER.lower():
+            raise ValueError("swap transaction must target the approved SwapRouter02")
+
+        args = step.get("args")
+        fn_name = str(step.get("abi_fn", "")).split("(", 1)[0]
+        if not isinstance(args, list) or not args:
+            raise ValueError(f"{fn_name} step is missing arguments")
+
+        if fn_name == "exactInputSingle":
+            route = args[0]
+            if not isinstance(route, (list, tuple)) or len(route) < 7:
+                raise ValueError("exactInputSingle step has an invalid route")
+            token_in = self._require_address(route[0], "tokenIn")
+            token_out = self._require_address(route[1], "tokenOut")
+            recipient = self._require_address(route[3], "recipient")
+            # The current MCP tuple omits a deadline. Keep support for the
+            # older eight-field shape while selecting amountIn safely.
+            amount_index = 5 if len(route) >= 8 else 4
+            amount_in = self._coerce_arg("uint256", route[amount_index])
+        else:
+            path = args[0]
+            if not isinstance(path, str):
+                raise ValueError("exactInput path must be hex data")
+            encoded = path[2:] if path.startswith("0x") else path
+            if len(encoded) < 40:
+                raise ValueError("exactInput path is too short")
+            token_addresses = [
+                self._require_address(
+                    "0x" + encoded[offset : offset + 40], "path token"
+                )
+                for offset in range(0, len(encoded) - 39, 46)
+            ]
+            token_in = token_addresses[0]
+            token_out = token_addresses[-1]
+            recipient = self._require_address(args[1], "recipient")
+            amount_in = self._coerce_arg("uint256", args[3])
+
+        if (
+            token_in not in _KNOWN_TOKEN_CONTRACTS
+            or token_out not in _KNOWN_TOKEN_CONTRACTS
+        ):
+            raise ValueError("swap contains an unsupported token contract")
+        if recipient != self.address.lower():
+            raise ValueError("swap recipient must be the configured signer wallet")
+        if not isinstance(amount_in, int) or amount_in <= 0:
+            raise ValueError("swap amountIn must be positive")
+
+    def _validate_step(self, step: dict) -> None:
+        """Validate an MCP transaction before any allowance read or signing."""
+        if not isinstance(step, dict):
+            raise ValueError("MCP transaction step must be an object")
+        if "to" in step:
+            raise ValueError(
+                "raw transaction steps are not accepted; require ABI steps"
+            )
+
+        contract = self._require_address(step.get("contract"), "contract")
+        if contract not in _ALLOWED_TARGETS:
+            raise ValueError(f"transaction target is not allowlisted: {contract}")
+
+        value = step.get("eth_value", step.get("value", 0))
+        try:
+            if int(value or 0) != 0:
+                raise ValueError("native ETH value is not allowed in bot transactions")
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith("native ETH"):
+                raise
+            raise ValueError(f"invalid transaction value: {value!r}") from exc
+
+        abi_fn = step.get("abi_fn")
+        if not isinstance(abi_fn, str) or not abi_fn:
+            raise ValueError("transaction step must include a full abi_fn signature")
+        fn_name = abi_fn.split("(", 1)[0]
+        if fn_name not in _ALLOWED_FUNCTIONS:
+            raise ValueError(f"transaction function is not allowlisted: {fn_name}")
+
+        args = step.get("args", [])
+        if fn_name == "approve":
+            if (
+                contract not in _KNOWN_TOKEN_CONTRACTS
+                or not isinstance(args, list)
+                or len(args) < 2
+            ):
+                raise ValueError("invalid ERC20 approve step")
+            spender = self._require_address(args[0], "spender")
+            if spender not in {
+                _LEVERAGE_ROUTER.lower(),
+                _LEVERAGE_VAULT.lower(),
+                _SWAP_ROUTER.lower(),
+            }:
+                raise ValueError("approve spender is not allowlisted")
+            if self._coerce_arg("uint256", args[1]) <= 0:
+                raise ValueError("approve amount must be positive")
+        elif fn_name == "approveDelegation":
+            if (
+                contract not in {address.lower() for address in _VARDEBT.values()}
+                or not isinstance(args, list)
+                or len(args) < 2
+            ):
+                raise ValueError("invalid Aave credit-delegation approval")
+            spender = self._require_address(args[0], "spender")
+            if spender not in {_LEVERAGE_ROUTER.lower(), _LEVERAGE_VAULT.lower()}:
+                raise ValueError("delegation spender is not allowlisted")
+            if self._coerce_arg("uint256", args[1]) <= 0:
+                raise ValueError("delegation amount must be positive")
+        elif fn_name in {"exactInput", "exactInputSingle"}:
+            self._validate_swap_step(step, contract)
+        elif contract not in {_LEVERAGE_ROUTER.lower(), _LEVERAGE_VAULT.lower()}:
+            raise ValueError(f"{fn_name} must target the approved leverage contracts")
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -199,8 +352,12 @@ class Signer:
                 f"Keys present: {list(resp.keys())}"
             )
 
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("MCP response contains no transaction steps")
+
         last_hash = None
         for step in steps:
+            self._validate_step(step)
             if self._should_skip_approval(step):
                 continue
             tx = self._step_to_raw_tx(step)
@@ -306,8 +463,25 @@ class Signer:
     def sign_and_send(self, tx: dict) -> str:
         """Sign and broadcast a raw transaction dict. Returns the tx hash."""
         tx = dict(tx)
+        target = self._require_address(tx.get("to"), "to")
+        if target not in _ALLOWED_TARGETS:
+            raise ValueError(f"transaction target is not allowlisted: {target}")
+        if int(tx.get("value", 0) or 0) != 0:
+            raise ValueError("native ETH value is not allowed in bot transactions")
+        if (
+            tx.get("from")
+            and self._require_address(tx["from"], "from") != self.address.lower()
+        ):
+            raise ValueError("transaction sender does not match signer wallet")
+        chain_id = self.w3.eth.chain_id
+        if chain_id != _BASE_CHAIN_ID:
+            raise RuntimeError(
+                f"signer RPC is on chain {chain_id}, expected Base {_BASE_CHAIN_ID}"
+            )
+        if tx.get("chainId", chain_id) != _BASE_CHAIN_ID:
+            raise ValueError("transaction chainId is not Base mainnet")
         tx.setdefault("from", self.account.address)
-        tx.setdefault("chainId", self.w3.eth.chain_id)
+        tx.setdefault("chainId", chain_id)
         if "nonce" not in tx:
             tx["nonce"] = self._next_nonce()
             log.info(

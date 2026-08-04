@@ -52,7 +52,8 @@ def test_short_swaps_asset_when_combined_balances_cover_seed() -> None:
     swap_args = mcp.swap.call_args.args
     assert swap_args[0] == "cbBTC"
     assert swap_args[1] == "USDC"
-    assert swap_args[2] == pytest.approx(0.001562)
+    assert swap_args[2] == pytest.approx(0.00082017146)
+    assert swap_args[2] < 0.001562
     signer.wait_for_receipt.assert_called_once_with("0xtest-swap")
     assert "cbBTC → USDC" in cycle_entry["pre_swap"]
 

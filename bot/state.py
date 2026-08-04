@@ -18,7 +18,7 @@ def now_iso() -> str:
 
 
 def load_entries(path: str) -> list[dict]:
-    """Load all log entries. Returns empty list if file doesn't exist."""
+    """Load all log entries. Fail closed if the append-only log is corrupted."""
     p = Path(path)
     if not p.exists():
         return []
@@ -29,8 +29,20 @@ def load_entries(path: str) -> list[dict]:
         try:
             entries.append(json.loads(line))
         except json.JSONDecodeError as e:
-            log.warning("state: skipping malformed line %d in %s: %s", i, path, e)
+            raise ValueError(f"malformed state line {i} in {path}") from e
     return entries
+
+
+def acquire_process_lock(path: str):
+    """Hold an exclusive non-blocking lock for the lifetime of the bot process."""
+    lock_path = Path(f"{path}.lock")
+    handle = lock_path.open("a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as e:
+        handle.close()
+        raise RuntimeError(f"another bot process already holds {lock_path}") from e
+    return handle
 
 
 def get_open_trade(entries: list[dict]) -> Optional[dict]:
@@ -87,6 +99,13 @@ def get_effective_size(
             supply += add_s
             borrow += add_b
             weighted_price += inc_price * add_b
+        if e.get("action") == "reduce":
+            reduced_supply = float(e.get("supply", 0) or 0)
+            reduced_borrow = float(e.get("borrow", 0) or 0)
+            if reduced_supply > 0 and reduced_borrow > 0:
+                supply = reduced_supply
+                borrow = reduced_borrow
+                weighted_price = entry_price * reduced_borrow
     avg_entry = weighted_price / borrow if borrow > 0 else entry_price
     return supply, borrow, avg_entry
 
@@ -143,6 +162,14 @@ def get_last_utilizations(
                     float(asset) if asset is not None else None,
                 )
     return None, None
+
+
+def get_last_short_asset_utilization(entries: list[dict]) -> Optional[float]:
+    """Return the most recent utilization for the configured short asset."""
+    for e in reversed(entries):
+        if e.get("type") == "cycle" and e.get("short_asset_utilization") is not None:
+            return float(e["short_asset_utilization"])
+    return None
 
 
 def get_position_peak(entries: list[dict]) -> float:

@@ -48,6 +48,8 @@ class MarketData:
     health_factor: float  # current Aave HF (999 = no debt)
     total_collateral_usd: float
     position_data: dict  # raw get_position response
+    position_available: bool = False  # MCP position snapshot was complete
+    onchain_available: bool = False  # all direct Aave safety reads succeeded
     volume_24h: Optional[float] = None  # 24h spot volume in USD (from CoinGecko)
     funding_rate: Optional[float] = (
         None  # perp funding rate in % per 8h (None = unavailable)
@@ -59,18 +61,22 @@ class MarketData:
     asset_utilization: Optional[float] = (
         None  # Aave v3 Base supply-asset utilization 0–1
     )
+    short_asset_utilization: Optional[float] = None
     recent_liquidations: Optional[int] = None  # LiquidationCall events in last ~5 min
     # Reserve status flags — None = RPC unavailable (treated as safe/unknown)
     asset_frozen: Optional[bool] = None  # supply asset frozen (flash loans blocked)
     asset_paused: Optional[bool] = None  # supply asset paused (all ops blocked)
     borrow_asset_frozen: Optional[bool] = None  # USDC frozen (long flash loan blocked)
     borrow_asset_paused: Optional[bool] = None  # USDC paused (all ops blocked)
+    short_asset_frozen: Optional[bool] = None
+    short_asset_paused: Optional[bool] = None
     usdc_supply_apy: Optional[float] = (
         None  # Aave USDC supply APY % (earned on short collateral)
     )
     asset_borrow_apy: Optional[float] = (
         None  # Aave asset borrow APY % (paid when short)
     )
+    short_borrow_apr: Optional[float] = None  # borrow APR for short_borrow_asset
     wallet_collateral_usd: float = 0.0  # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
 
 
@@ -80,6 +86,7 @@ def fetch(
     timeout: int = 15,
     rpc_url: str = "https://mainnet.base.org",
     onchain_lookback_blocks: int = 10,
+    short_borrow_asset: Optional[str] = None,
 ) -> tuple[MarketData, list[str]]:
     """
     Fetch from all 3 sources and return (MarketData, sources_failed).
@@ -112,15 +119,22 @@ def fetch(
 
     # ── Source 2: get_position (on-chain Aave state) ──────────────────────
     pos: Optional[dict] = None
+    position_available = False
+    short_asset = short_borrow_asset or asset
     borrow_apr = health_factor = total_collateral_usd = None
+    short_borrow_apr = None
     try:
         pos = mcp_client.get_position()
         rates = pos.get("reserveRates", {})
         borrow_apr = rates["USDC"]["borrowApy"] * 100
+        short_borrow_apr = rates[short_asset]["borrowApy"] * 100
         health_factor = float(pos["aave"]["healthFactor"])
         total_collateral_usd = float(pos["aave"]["totalCollateralUSD"])
+        position_available = isinstance(pos, dict) and isinstance(pos.get("aave"), dict)
     except Exception as e:
         sources_failed.append(f"get_position:{e}")
+    if not position_available:
+        sources_failed.append("get_position:incomplete_snapshot")
 
     # Wallet balances — used as collateral fallback when Aave position is closed
     # wallet_balances keys are token amounts (not USD); USDC ≈ $1 so it's direct.
@@ -141,7 +155,7 @@ def fetch(
         try:
             rates = pos.get("reserveRates", {})
             usdc_supply_apy = round(rates["USDC"]["supplyApy"] * 100, 4)
-            asset_borrow_apy = round(rates[asset]["borrowApy"] * 100, 4)
+            asset_borrow_apy = round(rates[short_asset]["borrowApy"] * 100, 4)
         except (KeyError, TypeError):
             pass
 
@@ -190,8 +204,14 @@ def fetch(
     # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
     from bot.onchain import fetch as onchain_fetch
 
-    oc = onchain_fetch(asset, rpc_url, onchain_lookback_blocks, borrow_asset="USDC")
-    if oc.usdc_utilization is None and oc.recent_liquidations is None:
+    oc = onchain_fetch(
+        asset,
+        rpc_url,
+        onchain_lookback_blocks,
+        borrow_asset="USDC",
+        short_asset=short_borrow_asset,
+    )
+    if not oc.available:
         sources_failed.append("onchain:all_fields_unavailable")
 
     # ── Source 6: Fear & Greed Index (soft — failure logged, not blocking) ────
@@ -238,17 +258,23 @@ def fetch(
         health_factor=health_factor if health_factor is not None else 999.0,
         total_collateral_usd=total_collateral_usd or 0.0,
         position_data=pos or {},
+        position_available=position_available,
+        onchain_available=oc.available,
         volume_24h=volume_24h,
         funding_rate=funding_rate,
         fear_greed=fear_greed,
         usdc_utilization=oc.usdc_utilization,
         asset_utilization=oc.asset_utilization,
+        short_asset_utilization=oc.short_asset_utilization,
         recent_liquidations=oc.recent_liquidations,
         asset_frozen=oc.asset_frozen,
         asset_paused=oc.asset_paused,
         borrow_asset_frozen=oc.borrow_asset_frozen,
         borrow_asset_paused=oc.borrow_asset_paused,
+        short_asset_frozen=oc.short_asset_frozen,
+        short_asset_paused=oc.short_asset_paused,
         usdc_supply_apy=usdc_supply_apy,
         asset_borrow_apy=asset_borrow_apy,
+        short_borrow_apr=short_borrow_apr,
         wallet_collateral_usd=wallet_collateral_usd,
     ), sources_failed

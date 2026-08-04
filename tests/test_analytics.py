@@ -1,6 +1,5 @@
 import json
 import tempfile
-from pathlib import Path
 
 from bot.analytics import analyze, report_to_dict
 
@@ -15,27 +14,55 @@ def _write_log(entries: list[dict]) -> str:
 
 def _cycle(ts, price, signal, decision, borrow_apr=4.0, btc_dom=55.0, change_1h=0.5):
     return {
-        "type": "cycle", "ts": ts, "price": price,
-        "signal": signal, "decision": decision,
-        "change_1h": change_1h, "change_24h": 1.0, "change_7d": 2.0,
-        "borrow_apr": borrow_apr, "btc_dominance_pct": btc_dom,
+        "type": "cycle",
+        "ts": ts,
+        "price": price,
+        "signal": signal,
+        "decision": decision,
+        "change_1h": change_1h,
+        "change_24h": 1.0,
+        "change_7d": 2.0,
+        "borrow_apr": borrow_apr,
+        "btc_dominance_pct": btc_dom,
     }
 
 
-def _open(ts, price, signal="strong_long", direction="long", supply=1.0, borrow=2.0, seed=2000.0, lev=3.0):
+def _open(
+    ts,
+    price,
+    signal="strong_long",
+    direction="long",
+    supply=1.0,
+    borrow=2.0,
+    seed=2000.0,
+    lev=3.0,
+):
     return {
-        "type": "trade", "action": "open", "ts": ts,
-        "asset": "WETH", "direction": direction, "signal": signal,
-        "entry_price": price, "supply": supply, "borrow": borrow,
-        "seed_usd": seed, "leverage": lev, "paper": True,
+        "type": "trade",
+        "action": "open",
+        "ts": ts,
+        "asset": "WETH",
+        "direction": direction,
+        "signal": signal,
+        "entry_price": price,
+        "supply": supply,
+        "borrow": borrow,
+        "seed_usd": seed,
+        "leverage": lev,
+        "paper": True,
     }
 
 
 def _close(ts, price, reason, realised):
     return {
-        "type": "trade", "action": "close", "ts": ts,
-        "asset": "WETH", "close_price": price,
-        "reason": reason, "realised_usd": realised, "paper": True,
+        "type": "trade",
+        "action": "close",
+        "ts": ts,
+        "asset": "WETH",
+        "close_price": price,
+        "reason": reason,
+        "realised_usd": realised,
+        "paper": True,
     }
 
 

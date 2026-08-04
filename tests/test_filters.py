@@ -40,6 +40,7 @@ def _cfg(**kwargs):
 
 # ── Volatility ────────────────────────────────────────────────────────────────
 
+
 def test_no_filter_passes():
     result = apply_all(_data(), "strong_long", "long", None, 49.0, _cfg())
     assert not result.blocked
@@ -59,8 +60,11 @@ def test_volatility_negative_spike():
 
 # ── Borrow APR ────────────────────────────────────────────────────────────────
 
+
 def test_borrow_apr_blocks_new_entry():
-    result = apply_all(_data(borrow_apr=10.0), "strong_long", "long", None, None, _cfg())
+    result = apply_all(
+        _data(borrow_apr=10.0), "strong_long", "long", None, None, _cfg()
+    )
     assert result.blocked
     assert result.decision == "skip_borrow_apr"
 
@@ -68,43 +72,70 @@ def test_borrow_apr_blocks_new_entry():
 def test_borrow_apr_does_not_block_open_trade():
     open_trade = {"asset": "WETH", "action": "open", "direction": "long"}
     # open_trade present → filter 4 (overlap) triggers first, not borrow APR
-    result = apply_all(_data(borrow_apr=10.0), "strong_long", "long", open_trade, None, _cfg())
+    result = apply_all(
+        _data(borrow_apr=10.0), "strong_long", "long", open_trade, None, _cfg()
+    )
     assert result.blocked
     assert result.decision == "skip_already_open"
 
 
+def test_short_uses_short_borrow_apr():
+    result = apply_all(
+        _data(borrow_apr=2.0, short_borrow_apr=10.0),
+        "strong_short",
+        "short",
+        None,
+        None,
+        _cfg(),
+    )
+    assert result.blocked
+    assert result.decision == "skip_borrow_apr"
+
+
 # ── BTC dominance ─────────────────────────────────────────────────────────────
 
+
 def test_btc_dominance_rising_blocks_long():
-    result = apply_all(_data(btc_dominance=53.0), "strong_long", "long", None, 50.0, _cfg())
+    result = apply_all(
+        _data(btc_dominance=53.0), "strong_long", "long", None, 50.0, _cfg()
+    )
     assert result.blocked
     assert result.decision == "skip_btc_dominance"
 
 
 def test_btc_dominance_rising_does_not_block_short():
     # Rising dominance is fine for shorts (BTC eating alts → alts weaken → good for short alts)
-    result = apply_all(_data(btc_dominance=53.0), "strong_short", "short", None, 50.0, _cfg())
+    result = apply_all(
+        _data(btc_dominance=53.0), "strong_short", "short", None, 50.0, _cfg()
+    )
     assert not result.blocked
 
 
 def test_btc_dominance_falling_blocks_short():
     # Falling dominance → alt season → bad for short alts
-    result = apply_all(_data(btc_dominance=47.0), "strong_short", "short", None, 50.0, _cfg())
+    result = apply_all(
+        _data(btc_dominance=47.0), "strong_short", "short", None, 50.0, _cfg()
+    )
     assert result.blocked
     assert result.decision == "skip_btc_dominance"
 
 
 def test_btc_dominance_falling_does_not_block_long():
-    result = apply_all(_data(btc_dominance=47.0), "strong_long", "long", None, 50.0, _cfg())
+    result = apply_all(
+        _data(btc_dominance=47.0), "strong_long", "long", None, 50.0, _cfg()
+    )
     assert not result.blocked
 
 
 def test_btc_dominance_skipped_when_no_prev():
-    result = apply_all(_data(btc_dominance=53.0), "strong_long", "long", None, None, _cfg())
+    result = apply_all(
+        _data(btc_dominance=53.0), "strong_long", "long", None, None, _cfg()
+    )
     assert not result.blocked
 
 
 # ── Position overlap ──────────────────────────────────────────────────────────
+
 
 def test_position_overlap_blocks_any_new_open():
     open_trade = {"asset": "WETH", "action": "open", "direction": "long"}

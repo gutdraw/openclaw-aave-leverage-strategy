@@ -4,6 +4,7 @@ Performance analytics — reads trades.jsonl and returns structured metrics.
 Designed to be called by Hermes or any agent that wants to evaluate
 strategy performance before proposing config changes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,27 +33,27 @@ class PerformanceReport:
     closed_trades: int
 
     # ── P&L ───────────────────────────────────────────────────────────────
-    win_rate: float                  # closed trades only
+    win_rate: float  # closed trades only
     total_pnl_usd: float
     avg_pnl_usd: float
     best_trade_usd: float
     worst_trade_usd: float
-    max_drawdown_usd: float          # largest peak→trough in cumulative P&L
+    max_drawdown_usd: float  # largest peak→trough in cumulative P&L
 
     # ── By signal ─────────────────────────────────────────────────────────
     by_signal: dict[str, SignalMetrics]
 
     # ── Filters ───────────────────────────────────────────────────────────
-    filter_counts: dict[str, int]    # decision → number of cycles with that decision
+    filter_counts: dict[str, int]  # decision → number of cycles with that decision
 
     # ── Hold time ─────────────────────────────────────────────────────────
-    avg_hold_cycles: float           # cycles between open and close
+    avg_hold_cycles: float  # cycles between open and close
 
     # ── Exit reasons ──────────────────────────────────────────────────────
-    exit_reasons: dict[str, int]     # reason → count
+    exit_reasons: dict[str, int]  # reason → count
 
     # ── Open position snapshot ────────────────────────────────────────────
-    open_position: Optional[dict]    # the current open trade entry, or None
+    open_position: Optional[dict]  # the current open trade entry, or None
 
     # ── Recommendation hints ──────────────────────────────────────────────
     hints: list[str] = field(default_factory=list)
@@ -63,10 +64,9 @@ def analyze(trades_file: str = "trades.jsonl") -> PerformanceReport:
     Read trades.jsonl and compute a full performance report.
     """
     entries = state.load_entries(trades_file)
-    cycles  = [e for e in entries if e.get("type") == "cycle"]
-    trades  = [e for e in entries if e.get("type") == "trade"]
-    opens   = [t for t in trades if t.get("action") == "open"]
-    closes  = [t for t in trades if t.get("action") == "close"]
+    cycles = [e for e in entries if e.get("type") == "cycle"]
+    trades = [e for e in entries if e.get("type") == "trade"]
+    closes = [t for t in trades if t.get("action") == "close"]
 
     open_position = state.get_open_trade(entries)
 
@@ -85,17 +85,16 @@ def analyze(trades_file: str = "trades.jsonl") -> PerformanceReport:
         pnl = float(c.get("realised_usd", 0))
         pnls.append(pnl)
 
-    wins   = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p <= 0]
+    wins = [p for p in pnls if p > 0]
 
-    win_rate      = len(wins) / len(pnls) if pnls else 0.0
-    total_pnl     = sum(pnls)
-    avg_pnl       = total_pnl / len(pnls) if pnls else 0.0
-    best_trade    = max(pnls) if pnls else 0.0
-    worst_trade   = min(pnls) if pnls else 0.0
+    win_rate = len(wins) / len(pnls) if pnls else 0.0
+    total_pnl = sum(pnls)
+    avg_pnl = total_pnl / len(pnls) if pnls else 0.0
+    best_trade = max(pnls) if pnls else 0.0
+    worst_trade = min(pnls) if pnls else 0.0
 
     # Max drawdown (peak → trough in cumulative P&L curve)
-    max_drawdown  = _max_drawdown(pnls)
+    max_drawdown = _max_drawdown(pnls)
 
     # ── By signal ─────────────────────────────────────────────────────────
     signal_map: dict[str, list[float]] = {}
@@ -180,10 +179,10 @@ def _avg_hold_cycles(
     cycle_ts = [c.get("ts", "") for c in cycles]
 
     for o, c in pairs:
-        open_ts  = o.get("ts", "")
+        open_ts = o.get("ts", "")
         close_ts = c.get("ts", "")
         try:
-            open_idx  = next(i for i, t in enumerate(cycle_ts) if t >= open_ts)
+            open_idx = next(i for i, t in enumerate(cycle_ts) if t >= open_ts)
             close_idx = next(i for i, t in enumerate(cycle_ts) if t >= close_ts)
             holds.append(max(1, close_idx - open_idx))
         except StopIteration:
@@ -202,7 +201,9 @@ def _generate_hints(
     """Generate actionable improvement hints based on the data."""
     hints: list[str] = []
     if len(pnls) < 5:
-        hints.append("Not enough closed trades for reliable analysis (need ≥5). Keep running paper cycles.")
+        hints.append(
+            "Not enough closed trades for reliable analysis (need ≥5). Keep running paper cycles."
+        )
         return hints
 
     overall_wr = len([p for p in pnls if p > 0]) / len(pnls)
@@ -227,12 +228,12 @@ def _generate_hints(
     total_exits = sl_count + tp_count
     if total_exits >= 4 and sl_count / total_exits > 0.65:
         hints.append(
-            f"Stop-losses represent {sl_count}/{total_exits} exits ({sl_count/total_exits:.0%}). "
+            f"Stop-losses represent {sl_count}/{total_exits} exits ({sl_count / total_exits:.0%}). "
             f"stop_loss_pct may be too tight — consider widening it."
         )
     if total_exits >= 4 and tp_count / total_exits > 0.70:
         hints.append(
-            f"Take-profits represent {tp_count}/{total_exits} exits ({tp_count/total_exits:.0%}). "
+            f"Take-profits represent {tp_count}/{total_exits} exits ({tp_count / total_exits:.0%}). "
             f"take_profit_pct may be too low — consider raising it to let winners run."
         )
 
@@ -273,8 +274,11 @@ def report_to_dict(r: PerformanceReport) -> dict:
         "avg_hold_cycles": r.avg_hold_cycles,
         "by_signal": {
             k: {
-                "trades": v.trades, "wins": v.wins, "losses": v.losses,
-                "win_rate": v.win_rate, "avg_pnl_usd": v.avg_pnl_usd,
+                "trades": v.trades,
+                "wins": v.wins,
+                "losses": v.losses,
+                "win_rate": v.win_rate,
+                "avg_pnl_usd": v.avg_pnl_usd,
                 "total_pnl_usd": v.total_pnl_usd,
             }
             for k, v in r.by_signal.items()

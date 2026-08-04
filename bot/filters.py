@@ -2,6 +2,7 @@
 No-trade filter pipeline.
 Filters are evaluated in priority order; the first triggered blocks the cycle.
 """
+
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -13,7 +14,7 @@ from bot.market import MarketData
 class FilterResult:
     blocked: bool
     triggered: list[str] = field(default_factory=list)
-    decision: Optional[str] = None   # logged to trades.jsonl cycle entry
+    decision: Optional[str] = None  # logged to trades.jsonl cycle entry
 
 
 def apply_all(
@@ -38,7 +39,7 @@ def apply_all(
     Filters 2-4 only block *opening* new positions; they do not affect
     managing an existing position (close / reduce / health-factor defense).
     """
-    is_long  = signal_direction == "long"
+    is_long = signal_direction == "long"
     is_short = signal_direction == "short"
 
     # ── Filter 1: Volatility spike ────────────────────────────────────────
@@ -50,7 +51,13 @@ def apply_all(
         )
 
     # ── Filter 2: Borrow cost ─────────────────────────────────────────────
-    if open_trade is None and data.borrow_apr > cfg.max_borrow_apr:
+    # Longs borrow USDC; shorts borrow the configured short asset.
+    borrow_apr = data.short_borrow_apr if is_short else data.borrow_apr
+    if (
+        open_trade is None
+        and borrow_apr is not None
+        and borrow_apr > cfg.max_borrow_apr
+    ):
         return FilterResult(
             blocked=True,
             triggered=["borrow_apr"],
@@ -117,7 +124,11 @@ def apply_all(
                 )
 
     # ── Filter 6: Volume (low-conviction moves) ───────────────────────────
-    if open_trade is None and cfg.min_volume_24h_usd > 0 and data.volume_24h is not None:
+    if (
+        open_trade is None
+        and cfg.min_volume_24h_usd > 0
+        and data.volume_24h is not None
+    ):
         if data.volume_24h < cfg.min_volume_24h_usd:
             return FilterResult(
                 blocked=True,

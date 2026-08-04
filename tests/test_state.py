@@ -1,4 +1,3 @@
-import json
 import tempfile
 from pathlib import Path
 
@@ -53,9 +52,9 @@ def test_get_open_trade_closed():
 
 def test_get_open_trade_reopened():
     entries = [
-        {"type": "trade", "action": "open",  "asset": "WETH"},
+        {"type": "trade", "action": "open", "asset": "WETH"},
         {"type": "trade", "action": "close", "asset": "WETH"},
-        {"type": "trade", "action": "open",  "asset": "WETH"},
+        {"type": "trade", "action": "open", "asset": "WETH"},
     ]
     assert get_open_trade(entries) is not None
 

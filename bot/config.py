@@ -25,7 +25,9 @@ class BotConfig:
     # ── Strategy ──────────────────────────────────────────────────────────
     asset: str = "WETH"
     borrow_asset: str = "USDC"
+    position_id: str = "WETH/USDC"
     short_borrow_asset: str = "WETH"  # asset to borrow (short) — e.g. WETH or cbBTC
+    short_position_id: str = "USDC/WETH"
     leverage: float = 3.0  # default leverage for both directions
     long_leverage: float = 0.0  # override leverage for longs only (0 = use leverage)
     short_leverage: float = 0.0  # override leverage for shorts only (0 = use leverage)
@@ -206,13 +208,21 @@ class BotConfig:
         """
         if direction == "short":
             base = self.short_leverage if self.short_leverage > 0 else self.leverage
-            return min(base, self.short_max_leverage)
-        return self.long_leverage if self.long_leverage > 0 else self.leverage
+            return min(base, self.short_max_leverage, self.max_leverage)
+        base = self.long_leverage if self.long_leverage > 0 else self.leverage
+        return min(base, self.max_leverage)
 
     @classmethod
     def load(cls, path: str = "config.yml") -> "BotConfig":
         raw = yaml.safe_load(Path(path).read_text())
+        if not isinstance(raw, dict):
+            raise ValueError("config must contain a YAML mapping")
         valid_keys = {f.name for f in fields(cls) if not f.name.startswith("_")}
+        unknown_keys = sorted(set(raw) - valid_keys)
+        if unknown_keys:
+            raise ValueError(
+                "unknown config keys: " + ", ".join(str(key) for key in unknown_keys)
+            )
         filtered = {k: v for k, v in raw.items() if k in valid_keys}
         cfg = cls(**filtered)
         cfg._config_path = str(Path(path).resolve())
@@ -222,7 +232,8 @@ class BotConfig:
                 "user_address is still the placeholder. "
                 "Set your bot wallet address in config.yml before running."
             )
-        if not cfg.mcp_session_token:
+        has_auto_renew_key = bool(cfg.private_key or os.environ.get("PRIVATE_KEY"))
+        if not cfg.mcp_session_token and not has_auto_renew_key:
             raise ValueError(
                 "mcp_session_token is empty. "
                 "Run scripts/buy_session.py to purchase one, or set PRIVATE_KEY "
@@ -237,4 +248,10 @@ class BotConfig:
                 "private_key is required for live mode. "
                 "Set PRIVATE_KEY env var or add it to config.yml (never commit it)."
             )
+        if not 0 < cfg.base_position_pct <= 1:
+            raise ValueError("base_position_pct must be greater than 0 and at most 1")
+        if cfg.max_leverage <= 0 or cfg.leverage <= 0:
+            raise ValueError("leverage and max_leverage must be positive")
+        if cfg.short_max_leverage <= 0:
+            raise ValueError("short_max_leverage must be positive")
         return cfg
