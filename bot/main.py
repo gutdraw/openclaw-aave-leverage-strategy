@@ -39,6 +39,7 @@ import bot.sizing as sizing
 import bot.state as state
 from bot.config import BotConfig
 from bot.mcp_client import MCPClient
+from bot.onchain import canonical_asset
 from bot.swaps import inject_swap_approve
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,15 @@ def _aave_positions(position_data: dict) -> list[dict]:
     return [position for position in raw_positions if isinstance(position, dict)]
 
 
+def _position_asset(position: dict, *keys: str) -> str:
+    for key in keys:
+        value = position.get(key)
+        normalized = canonical_asset(value)
+        if normalized:
+            return normalized
+    return ""
+
+
 def _find_chain_position(
     position_data: dict,
     expected_position_id: str,
@@ -144,48 +154,53 @@ def _find_chain_position(
             if isinstance(value, str) and value == expected_position_id:
                 return position
 
-    expected_supply = "USDC" if direction == "short" else cfg.asset
-    expected_borrow = (
+    expected_supply = canonical_asset("USDC" if direction == "short" else cfg.asset)
+    expected_borrow = canonical_asset(
         cfg.short_borrow_asset if direction == "short" else cfg.borrow_asset
     )
     if len(positions) == 1:
         position = positions[0]
-        declared_supply = str(
-            position.get("supplyAsset")
-            or position.get("supply_asset")
-            or position.get("collateralAsset")
-            or ""
+        declared_supply = _position_asset(
+            position,
+            "supplySymbol",
+            "supplyAsset",
+            "supply_asset",
+            "collateralSymbol",
+            "collateralAsset",
         )
-        declared_borrow = str(
-            position.get("borrowAsset")
-            or position.get("borrow_asset")
-            or position.get("debtAsset")
-            or ""
+        declared_borrow = _position_asset(
+            position,
+            "borrowSymbol",
+            "borrowAsset",
+            "borrow_asset",
+            "debtSymbol",
+            "debtAsset",
         )
-        if (declared_supply and declared_supply.lower() != expected_supply.lower()) or (
-            declared_borrow and declared_borrow.lower() != expected_borrow.lower()
+        if (declared_supply and declared_supply != expected_supply) or (
+            declared_borrow and declared_borrow != expected_borrow
         ):
             return None
         return position
 
     matches: list[dict] = []
     for position in positions:
-        supply = str(
-            position.get("supplyAsset")
-            or position.get("supply_asset")
-            or position.get("collateralAsset")
-            or ""
+        supply = _position_asset(
+            position,
+            "supplySymbol",
+            "supplyAsset",
+            "supply_asset",
+            "collateralSymbol",
+            "collateralAsset",
         )
-        borrow = str(
-            position.get("borrowAsset")
-            or position.get("borrow_asset")
-            or position.get("debtAsset")
-            or ""
+        borrow = _position_asset(
+            position,
+            "borrowSymbol",
+            "borrowAsset",
+            "borrow_asset",
+            "debtSymbol",
+            "debtAsset",
         )
-        if (
-            supply.lower() == expected_supply.lower()
-            and borrow.lower() == expected_borrow.lower()
-        ):
+        if supply == expected_supply and borrow == expected_borrow:
             matches.append(position)
     return matches[0] if len(matches) == 1 else None
 
@@ -1323,7 +1338,7 @@ def run_cycle(
                         break  # got a valid position — done
                     if _aave_positions(pos):
                         log.warning(
-                            "post-open reconciliation found ambiguous positions; "
+                            "post-open reconciliation found no unique matching position; "
                             "keeping computed size"
                         )
                     # positions empty — tx may not be indexed yet, retry

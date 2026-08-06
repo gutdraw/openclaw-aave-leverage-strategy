@@ -61,6 +61,21 @@ _VARDEBT: dict[str, str] = {
     "USDC": "0x59dca05b6c26dbd64b5381374aaac5cd05644c28",
 }
 
+
+def canonical_asset(value: object) -> str:
+    """Normalize a configured symbol or known Base asset address."""
+    if value is None:
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    lowered = raw.casefold()
+    for symbol, address in _ASSET_ADDR.items():
+        if lowered in {symbol.casefold(), address.casefold()}:
+            return symbol.casefold()
+    return lowered
+
+
 _TOTAL_SUPPLY_ABI = [
     {
         "inputs": [],
