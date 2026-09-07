@@ -190,3 +190,18 @@ short_max_leverage: 2.5     # BTC short exposure = leverage-1 = 1.5x
 short_min_open_hf: 1.25
 short_hf_defense_reduce: 1.10   # ~5% adverse BTC move from 3x open
 short_hf_defense_close: 1.06    # ~9% adverse BTC move from 3x open
+
+# ---------------------------------------------------------------
+# DURABILITY / OPERATIONS
+# Empty paths derive sibling files from trades_file.
+# ---------------------------------------------------------------
+journal_file: ""                    # SQLite execution journal
+heartbeat_file: ""                  # atomic supervisor heartbeat
+risk_config_max_age_seconds: 900    # block new exposure on stale Aave config
+
+# Live swaps require a quoted minimum output and a client-side freshness bound.
+# Router-native deadlines are accepted when the MCP server emits them.
+swap_slippage_bps: 20
+swap_quote_max_age_seconds: 30
+swap_deadline_seconds: 120
+require_swap_quote: true

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 from bot.filters import apply_all
+from bot.main import _liquidity_escape_reason
 from bot.market import MarketData
 
 
@@ -33,6 +34,8 @@ def _cfg(**kwargs):
     cfg.min_volume_24h_usd = 0.0
     cfg.max_usdc_utilization = 0.92
     cfg.max_recent_liquidations = 3
+    cfg.liquidity_escape_utilization = 0.95
+    cfg.liquidity_escape_velocity = 0.05
     for k, v in kwargs.items():
         setattr(cfg, k, v)
     return cfg
@@ -150,3 +153,16 @@ def test_position_overlap_blocks_opposite_direction():
     result = apply_all(_data(), "strong_short", "short", open_trade, 49.0, _cfg())
     assert result.blocked
     assert result.decision == "skip_already_open"
+
+
+def test_liquidity_escape_precedes_health_factor_reduction():
+    data = _data(
+        usdc_utilization=0.96,
+        borrow_asset_frozen=False,
+        borrow_asset_paused=False,
+    )
+    entries = [{"type": "cycle", "usdc_utilization": 0.90}]
+
+    assert _liquidity_escape_reason(data, entries, _cfg(), "long") == (
+        "liquidity_escape_utilization"
+    )

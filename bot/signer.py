@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable, Optional
 
 from eth_account import Account
 from web3 import Web3
@@ -240,7 +241,12 @@ class Signer:
             amount_index = 5 if len(route) >= 8 else 4
             amount_in = self._coerce_arg("uint256", route[amount_index])
         else:
-            path = args[0]
+            route = (
+                args[0]
+                if len(args) == 1 and isinstance(args[0], (list, tuple))
+                else args
+            )
+            path = route[0]
             if not isinstance(path, str):
                 raise ValueError("exactInput path must be hex data")
             encoded = path[2:] if path.startswith("0x") else path
@@ -254,8 +260,9 @@ class Signer:
             ]
             token_in = token_addresses[0]
             token_out = token_addresses[-1]
-            recipient = self._require_address(args[1], "recipient")
-            amount_in = self._coerce_arg("uint256", args[3])
+            recipient = self._require_address(route[1], "recipient")
+            amount_index = 4 if len(route) >= 5 else 3
+            amount_in = self._coerce_arg("uint256", route[amount_index])
 
         if (
             token_in not in _KNOWN_TOKEN_CONTRACTS
@@ -332,7 +339,12 @@ class Signer:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def execute_steps(self, resp: dict) -> str:
+    def execute_steps(
+        self,
+        resp: dict,
+        on_broadcast: Optional[Callable[[int, str, Optional[int]], None]] = None,
+        on_confirmed: Optional[Callable[[int, str, dict], None]] = None,
+    ) -> str:
         """
         Execute all transaction steps from an MCP response.
         Returns the last tx hash sent.
@@ -356,13 +368,15 @@ class Signer:
             raise ValueError("MCP response contains no transaction steps")
 
         last_hash = None
-        for step in steps:
+        for step_index, step in enumerate(steps):
             self._validate_step(step)
             if self._should_skip_approval(step):
                 continue
             tx = self._step_to_raw_tx(step)
             try:
                 last_hash = self.sign_and_send(tx)
+                if on_broadcast is not None:
+                    on_broadcast(step_index, last_hash, tx.get("nonce"))
             except Exception:
                 self.reset_nonce()
                 raise
@@ -370,7 +384,9 @@ class Signer:
             log.info(
                 "tx %s sent (%s)", last_hash, step.get("title", step.get("type", "?"))
             )
-            self.wait_for_receipt(last_hash)
+            receipt = self.wait_for_receipt(last_hash)
+            if on_confirmed is not None:
+                on_confirmed(step_index, last_hash, receipt)
             if fn_name in ("approve", "approveDelegation"):
                 # Base sequencer tracks "delegated accounts" with a 1-in-flight limit.
                 # Give it a moment to clear the approval before sending the next tx.

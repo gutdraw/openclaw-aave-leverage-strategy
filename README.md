@@ -160,6 +160,8 @@ openclaw-aave-leverage-strategy/
 ├── trades.jsonl          # Trade log, created at runtime (gitignored)
 ├── bot/
 │   ├── main.py           # Entry point — per-cycle execution loop
+│   ├── journal.py        # SQLite transaction journal and crash recovery state
+│   ├── heartbeat.py      # Atomic supervisor heartbeat writer
 │   ├── config.py         # Config dataclass
 │   ├── market.py         # Market data fetcher (7 sources)
 │   ├── ohlcv.py          # OHLCV signal engine — 3-TF EMA + RSI + OBV + MACD (Coinbase → Kraken)
@@ -169,11 +171,25 @@ openclaw-aave-leverage-strategy/
 │   ├── sizing.py         # Position sizing + increase delta
 │   ├── executor.py       # Trade execution (open/close/increase/reduce)
 │   ├── state.py          # trades.jsonl read/write + effective size helpers
-│   └── pnl.py            # P&L computation
+│   ├── pnl.py            # P&L computation
+│   └── backtest.py       # Legacy studies plus faithful live-snapshot replay
 ├── tests/                # Unit tests
 └── scripts/
-    └── buy_session.py    # Purchase MCP session token
+    ├── buy_session.py    # Purchase MCP session token
+    └── check_health.py   # Heartbeat/journal health check
 ```
+
+The live loop writes `trades.jsonl` as an audit export and uses a sibling SQLite
+execution journal for crash recovery. New swaps fail closed unless the MCP
+response includes a fresh quoted minimum output; the current legacy router shape
+also receives a client-side freshness deadline before signing. See `deploy/` for
+the systemd service and health-check timer templates. A future MCP upgrade can
+add an on-chain router deadline without changing the bot policy.
+
+For historical analysis, `bot.backtest.run()` preserves the legacy parameter
+study behavior. `bot.backtest.run_live()` replays the recorded live signal and
+shared filter pipeline, and reports incomplete snapshots instead of treating
+missing live inputs as equivalent to a clean backtest.
 
 ---
 

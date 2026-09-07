@@ -168,6 +168,24 @@ class BotConfig:
         0.0  # if > 0, use this as collateral in paper mode (no real funds needed)
     )
     trades_file: str = "trades.jsonl"
+    # Durable execution/recovery state. Empty values derive sibling files from
+    # trades_file so existing configurations remain compatible.
+    journal_file: str = ""
+    heartbeat_file: str = ""
+
+    # Swap execution policy. A live swap must carry a client-bounded freshness
+    # deadline and a non-zero amountOutMinimum; quote metadata is required by
+    # default. Router-native deadlines are accepted when the MCP server emits
+    # them.
+    swap_slippage_bps: int = 20
+    swap_quote_max_age_seconds: int = 30
+    swap_deadline_seconds: int = 120
+    require_swap_quote: bool = True
+
+    # Maximum accepted age for a dynamic Aave reserve snapshot. New exposure is
+    # blocked when the snapshot is older or unavailable; protective actions use
+    # direct account health data where possible.
+    risk_config_max_age_seconds: int = 900
 
     # Internal — set by load(), not from config file
     _config_path: str = ""
@@ -212,6 +230,18 @@ class BotConfig:
         base = self.long_leverage if self.long_leverage > 0 else self.leverage
         return min(base, self.max_leverage)
 
+    def runtime_journal_file(self) -> str:
+        """Return the SQLite journal path, preserving the config's directory."""
+        if self.journal_file:
+            return self.journal_file
+        return str(Path(self.trades_file).with_suffix(".sqlite3"))
+
+    def runtime_heartbeat_file(self) -> str:
+        """Return the atomic heartbeat path, preserving the config's directory."""
+        if self.heartbeat_file:
+            return self.heartbeat_file
+        return str(Path(self.trades_file).with_suffix(".heartbeat.json"))
+
     @classmethod
     def load(cls, path: str = "config.yml") -> "BotConfig":
         raw = yaml.safe_load(Path(path).read_text())
@@ -254,4 +284,12 @@ class BotConfig:
             raise ValueError("leverage and max_leverage must be positive")
         if cfg.short_max_leverage <= 0:
             raise ValueError("short_max_leverage must be positive")
+        if not 0 <= cfg.swap_slippage_bps <= 10_000:
+            raise ValueError("swap_slippage_bps must be between 0 and 10000")
+        if cfg.swap_quote_max_age_seconds <= 0:
+            raise ValueError("swap_quote_max_age_seconds must be positive")
+        if cfg.swap_deadline_seconds <= 0:
+            raise ValueError("swap_deadline_seconds must be positive")
+        if cfg.risk_config_max_age_seconds <= 0:
+            raise ValueError("risk_config_max_age_seconds must be positive")
         return cfg

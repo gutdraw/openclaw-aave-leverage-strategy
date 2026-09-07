@@ -1,0 +1,27 @@
+[Unit]
+Description=OpenClaw Aave leverage strategy bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/skunk/openclaw-aave-leverage-strategy
+EnvironmentFile=-/home/ec2-user/skunk/openclaw-aave-leverage-strategy/.env
+ExecStart=/home/ec2-user/skunk/openclaw-aave-leverage-strategy/.venv/bin/python -m bot.main --config /home/ec2-user/skunk/openclaw-aave-leverage-strategy/my-config.yml --loop 1800
+Restart=on-failure
+RestartSec=15
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ec2-user/skunk/openclaw-aave-leverage-strategy
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

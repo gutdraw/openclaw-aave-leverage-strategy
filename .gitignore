@@ -1,5 +1,8 @@
 # ── Runtime data — never commit ──────────────────────────────────────────────
 trades.jsonl
+*.sqlite3
+*.heartbeat.json
+*.recovery-*
 config_changes.jsonl
 config.yml
 my-config.yml

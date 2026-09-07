@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -76,6 +77,15 @@ def canonical_asset(value: object) -> str:
     return lowered
 
 
+def asset_address(symbol: str) -> Optional[str]:
+    """Return a known Base underlying address using case-insensitive symbols."""
+    wanted = str(symbol or "").casefold()
+    for name, address in _ASSET_ADDR.items():
+        if name.casefold() == wanted or address.casefold() == wanted:
+            return address
+    return None
+
+
 _TOTAL_SUPPLY_ABI = [
     {
         "inputs": [],
@@ -84,6 +94,43 @@ _TOTAL_SUPPLY_ABI = [
         "stateMutability": "view",
         "type": "function",
     }
+]
+
+_POOL_RISK_ABI = [
+    {
+        "inputs": [{"name": "user", "type": "address"}],
+        "name": "getUserAccountData",
+        "outputs": [
+            {"name": "totalCollateralBase", "type": "uint256"},
+            {"name": "totalDebtBase", "type": "uint256"},
+            {"name": "availableBorrowsBase", "type": "uint256"},
+            {"name": "currentLiquidationThreshold", "type": "uint256"},
+            {"name": "ltv", "type": "uint256"},
+            {"name": "healthFactor", "type": "uint256"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "user", "type": "address"}],
+        "name": "getUserEMode",
+        "outputs": [{"name": "", "type": "uint8"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "id", "type": "uint8"}],
+        "name": "getEModeCategoryData",
+        "outputs": [
+            {"name": "ltv", "type": "uint16"},
+            {"name": "liquidationThreshold", "type": "uint16"},
+            {"name": "liquidationBonus", "type": "uint16"},
+            {"name": "priceSource", "type": "address"},
+            {"name": "label", "type": "string"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
 ]
 
 # Default lookback for eth_getLogs.
@@ -106,6 +153,21 @@ class OnChainData:
     short_asset_utilization: Optional[float] = None
     short_asset_frozen: Optional[bool] = None
     short_asset_paused: Optional[bool] = None
+    # Dynamic reserve/account risk data. Values are basis-point fields converted
+    # to ratios, so callers do not need protocol-specific bit decoding.
+    risk_available: bool = False
+    reserve_ltv: Optional[float] = None
+    reserve_liquidation_threshold: Optional[float] = None
+    reserve_emode_category: Optional[int] = None
+    borrow_reserve_ltv: Optional[float] = None
+    borrow_reserve_liquidation_threshold: Optional[float] = None
+    borrow_reserve_emode_category: Optional[int] = None
+    account_ltv: Optional[float] = None
+    account_liquidation_threshold: Optional[float] = None
+    user_emode_category: Optional[int] = None
+    emode_liquidation_threshold: Optional[float] = None
+    risk_block: Optional[int] = None
+    risk_fetched_at: Optional[str] = None
 
 
 def fetch(
@@ -114,6 +176,7 @@ def fetch(
     lookback_blocks: int = _LOOKBACK_BLOCKS_DEFAULT,
     borrow_asset: str = "USDC",
     short_asset: Optional[str] = None,
+    user_address: Optional[str] = None,
 ) -> OnChainData:
     """
     Fetch on-chain Aave v3 state from Base. Never raises — returns unavailable
@@ -123,6 +186,8 @@ def fetch(
     usdc_util = asset_util = recent_liq = None
     asset_frozen = asset_paused = borrow_frozen = borrow_paused = None
     short_asset_util = short_asset_frozen = short_asset_paused = None
+    risk: dict = {}
+    borrow_risk: dict = {}
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
 
@@ -138,6 +203,9 @@ def fetch(
         short_asset_name = short_asset or asset
         short_asset_util = _utilization(w3, short_asset_name)
         short_asset_frozen, short_asset_paused = _reserve_flags(w3, short_asset_name)
+        risk = _risk_snapshot(w3, asset, user_address)
+        borrow_risk = _risk_snapshot(w3, borrow_asset, None)
+        risk["fetched_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     except Exception as e:
         log.debug("onchain.fetch error: %s", e)
@@ -170,13 +238,32 @@ def fetch(
         short_asset_utilization=short_asset_util,
         short_asset_frozen=short_asset_frozen,
         short_asset_paused=short_asset_paused,
+        risk_available=bool(risk.get("available") and borrow_risk.get("available")),
+        reserve_ltv=risk.get("reserve_ltv"),
+        reserve_liquidation_threshold=risk.get("reserve_liquidation_threshold"),
+        reserve_emode_category=risk.get("reserve_emode_category"),
+        borrow_reserve_ltv=borrow_risk.get("reserve_ltv"),
+        borrow_reserve_liquidation_threshold=borrow_risk.get(
+            "reserve_liquidation_threshold"
+        ),
+        borrow_reserve_emode_category=borrow_risk.get("reserve_emode_category"),
+        account_ltv=risk.get("account_ltv"),
+        account_liquidation_threshold=risk.get("account_liquidation_threshold"),
+        user_emode_category=risk.get("user_emode_category"),
+        emode_liquidation_threshold=risk.get("emode_liquidation_threshold"),
+        risk_block=risk.get("risk_block"),
+        risk_fetched_at=risk.get("fetched_at"),
     )
 
 
 def _utilization(w3: Web3, symbol: str) -> Optional[float]:
     """varDebtToken.totalSupply() / aToken.totalSupply() — pool utilization ratio."""
-    a_addr = _ATOKEN.get(symbol)
-    d_addr = _VARDEBT.get(symbol)
+    canonical = next(
+        (name for name in _ATOKEN if name.casefold() == str(symbol).casefold()),
+        symbol,
+    )
+    a_addr = _ATOKEN.get(canonical)
+    d_addr = _VARDEBT.get(canonical)
     if not a_addr or not d_addr:
         return None
     try:
@@ -210,7 +297,7 @@ def _reserve_flags(w3: Web3, symbol: str) -> tuple[Optional[bool], Optional[bool
 
     Returns (None, None) if the asset is unknown or the RPC call fails.
     """
-    addr = _ASSET_ADDR.get(symbol)
+    addr = asset_address(symbol)
     if not addr:
         return None, None
     try:
@@ -239,6 +326,90 @@ def _reserve_flags(w3: Web3, symbol: str) -> tuple[Optional[bool], Optional[bool
     except Exception as e:
         log.debug("reserve_flags error for %s: %s", symbol, e)
         return None, None
+
+
+def _reserve_configuration(w3: Web3, symbol: str) -> Optional[dict]:
+    """Decode the live Aave reserve configuration from ``getReserveData``."""
+    addr = asset_address(symbol)
+    if not addr:
+        return None
+    try:
+        selector = Web3.keccak(text="getReserveData(address)")[:4]
+        from eth_abi import encode as abi_encode
+
+        result = w3.eth.call(
+            {
+                "to": Web3.to_checksum_address(AAVE_POOL_BASE),
+                "data": "0x"
+                + (
+                    selector + abi_encode(["address"], [Web3.to_checksum_address(addr)])
+                ).hex(),
+            }
+        )
+        if len(result) < 32:
+            return None
+        config = int.from_bytes(result[:32], "big")
+        return {
+            "ltv": ((config >> 0) & 0xFFFF) / 10_000,
+            "liquidation_threshold": ((config >> 16) & 0xFFFF) / 10_000,
+            "liquidation_bonus": ((config >> 32) & 0xFFFF) / 10_000,
+            "decimals": (config >> 48) & 0xFF,
+            "active": bool((config >> 56) & 1),
+            "frozen": bool((config >> 57) & 1),
+            "borrowing_enabled": bool((config >> 58) & 1),
+            "paused": bool((config >> 60) & 1),
+            "flashloan_enabled": bool((config >> 63) & 1),
+            "emode_category": (config >> 168) & 0xFF,
+        }
+    except Exception as e:
+        log.debug("reserve configuration error for %s: %s", symbol, e)
+        return None
+
+
+def _risk_snapshot(w3: Web3, asset: str, user_address: Optional[str]) -> dict:
+    """Read reserve risk plus account/eMode risk without making the cycle fail."""
+    reserve = _reserve_configuration(w3, asset)
+    result: dict = {
+        "available": reserve is not None,
+        "reserve_ltv": reserve.get("ltv") if reserve else None,
+        "reserve_liquidation_threshold": (
+            reserve.get("liquidation_threshold") if reserve else None
+        ),
+        "reserve_emode_category": reserve.get("emode_category") if reserve else None,
+        "account_ltv": None,
+        "account_liquidation_threshold": None,
+        "user_emode_category": None,
+        "emode_liquidation_threshold": None,
+        "risk_block": None,
+    }
+    try:
+        result["risk_block"] = w3.eth.block_number
+    except Exception:
+        pass
+
+    if not user_address or not Web3.is_address(user_address):
+        return result
+
+    result["available"] = False
+    try:
+        pool = w3.eth.contract(
+            address=Web3.to_checksum_address(AAVE_POOL_BASE), abi=_POOL_RISK_ABI
+        )
+        user = Web3.to_checksum_address(user_address)
+        account = pool.functions.getUserAccountData(user).call()
+        result["account_ltv"] = float(account[4]) / 10_000
+        result["account_liquidation_threshold"] = float(account[3]) / 10_000
+        category = int(pool.functions.getUserEMode(user).call())
+        result["user_emode_category"] = category
+        if category > 0:
+            category_data = pool.functions.getEModeCategoryData(category).call()
+            result["emode_liquidation_threshold"] = float(category_data[1]) / 10_000
+        result["available"] = True
+    except Exception as e:
+        # Reserve config is still useful for new-position simulation when the
+        # account has no debt or the optional user call is unavailable.
+        log.debug("account risk configuration error: %s", e)
+    return result
 
 
 def _recent_liquidations(w3: Web3, lookback: int) -> Optional[int]:

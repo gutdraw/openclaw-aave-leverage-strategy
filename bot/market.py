@@ -70,6 +70,19 @@ class MarketData:
     borrow_asset_paused: Optional[bool] = None  # USDC paused (all ops blocked)
     short_asset_frozen: Optional[bool] = None
     short_asset_paused: Optional[bool] = None
+    risk_data_available: bool = False
+    reserve_ltv: Optional[float] = None
+    reserve_liquidation_threshold: Optional[float] = None
+    reserve_emode_category: Optional[int] = None
+    borrow_reserve_ltv: Optional[float] = None
+    borrow_reserve_liquidation_threshold: Optional[float] = None
+    borrow_reserve_emode_category: Optional[int] = None
+    account_ltv: Optional[float] = None
+    account_liquidation_threshold: Optional[float] = None
+    user_emode_category: Optional[int] = None
+    emode_liquidation_threshold: Optional[float] = None
+    risk_block: Optional[int] = None
+    risk_fetched_at: Optional[str] = None
     usdc_supply_apy: Optional[float] = (
         None  # Aave USDC supply APY % (earned on short collateral)
     )
@@ -210,6 +223,7 @@ def fetch(
         onchain_lookback_blocks,
         borrow_asset="USDC",
         short_asset=short_borrow_asset,
+        user_address=getattr(mcp_client, "wallet_address", None),
     )
     if not oc.available:
         sources_failed.append("onchain:all_fields_unavailable")
@@ -273,6 +287,19 @@ def fetch(
         borrow_asset_paused=oc.borrow_asset_paused,
         short_asset_frozen=oc.short_asset_frozen,
         short_asset_paused=oc.short_asset_paused,
+        risk_data_available=oc.risk_available,
+        reserve_ltv=oc.reserve_ltv,
+        reserve_liquidation_threshold=oc.reserve_liquidation_threshold,
+        reserve_emode_category=oc.reserve_emode_category,
+        borrow_reserve_ltv=oc.borrow_reserve_ltv,
+        borrow_reserve_liquidation_threshold=oc.borrow_reserve_liquidation_threshold,
+        borrow_reserve_emode_category=oc.borrow_reserve_emode_category,
+        account_ltv=oc.account_ltv,
+        account_liquidation_threshold=oc.account_liquidation_threshold,
+        user_emode_category=oc.user_emode_category,
+        emode_liquidation_threshold=oc.emode_liquidation_threshold,
+        risk_block=oc.risk_block,
+        risk_fetched_at=oc.risk_fetched_at,
         usdc_supply_apy=usdc_supply_apy,
         asset_borrow_apy=asset_borrow_apy,
         short_borrow_apr=short_borrow_apr,

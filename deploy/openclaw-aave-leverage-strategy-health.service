@@ -1,0 +1,8 @@
+[Unit]
+Description=Check OpenClaw Aave leverage strategy bot health
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/skunk/openclaw-aave-leverage-strategy
+ExecStart=/home/ec2-user/skunk/openclaw-aave-leverage-strategy/.venv/bin/python /home/ec2-user/skunk/openclaw-aave-leverage-strategy/scripts/check_health.py --heartbeat /home/ec2-user/skunk/openclaw-aave-leverage-strategy/trades.heartbeat.json --journal /home/ec2-user/skunk/openclaw-aave-leverage-strategy/trades.sqlite3 --max-age 3900

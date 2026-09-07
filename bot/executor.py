@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from bot.config import BotConfig
+from bot.journal import ExecutionJournal, journal_execution
 from bot.mcp_client import MCPClient
 from bot.sizing import PositionSize
-from bot.swaps import inject_swap_approve
+from bot.swaps import bound_swap_response, inject_swap_approve, validate_swap_response
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,61 @@ class ExecResult:
     action: str  # "open" | "close" | "reduce" | "paper"
     tx_hash: Optional[str]  # None in paper mode
     raw: dict  # full MCP response or stub
+    execution_id: Optional[str] = None
+
+
+def _execute_steps(
+    signer,
+    response: dict,
+    journal: Optional[ExecutionJournal],
+    action: str,
+    position_id: Optional[str],
+    direction: Optional[str],
+    cfg: BotConfig,
+    metadata: Optional[dict] = None,
+) -> tuple[str, Optional[str]]:
+    """Send a transaction sequence and make its lifecycle durable."""
+    response = bound_swap_response(
+        response,
+        deadline_seconds=cfg.swap_deadline_seconds,
+    )
+    if journal is None:
+        validate_swap_response(
+            response,
+            slippage_bps=cfg.swap_slippage_bps,
+            quote_max_age_seconds=cfg.swap_quote_max_age_seconds,
+            deadline_seconds=cfg.swap_deadline_seconds,
+            require_quote=cfg.require_swap_quote,
+        )
+        return signer.execute_steps(response), None
+
+    receipt: dict = {}
+    with journal_execution(
+        journal,
+        action,
+        position_id=position_id,
+        direction=direction,
+        metadata=metadata,
+    ) as (execution_id, on_broadcast):
+        validate_swap_response(
+            response,
+            slippage_bps=cfg.swap_slippage_bps,
+            quote_max_age_seconds=cfg.swap_quote_max_age_seconds,
+            deadline_seconds=cfg.swap_deadline_seconds,
+            require_quote=cfg.require_swap_quote,
+        )
+
+        def on_confirmed(_step: int, _tx_hash: str, step_receipt: dict) -> None:
+            receipt.clear()
+            receipt.update(step_receipt)
+
+        tx_hash = signer.execute_steps(
+            response,
+            on_broadcast=on_broadcast,
+            on_confirmed=on_confirmed,
+        )
+        journal.mark_confirmed(execution_id, tx_hash, receipt or None)
+        return tx_hash, execution_id
 
 
 def open_position(
@@ -41,6 +97,7 @@ def open_position(
     cfg: BotConfig,
     mcp: MCPClient,
     signer=None,
+    journal: Optional[ExecutionJournal] = None,
 ) -> ExecResult:
     """
     Open a leveraged position.
@@ -89,9 +146,24 @@ def open_position(
         supply_asset=supply_asset,
         borrow_asset=borrow_asset,
     )
-    tx_hash = signer.execute_steps(resp)
+    tx_hash, execution_id = _execute_steps(
+        signer,
+        resp,
+        journal,
+        "open",
+        position_id,
+        direction,
+        cfg,
+        {
+            "supply": amount,
+            "borrow": size.borrow,
+            "leverage": cfg.leverage_for(direction),
+        },
+    )
     log.info("open %s tx %s", direction, tx_hash)
-    return ExecResult(action="open", tx_hash=tx_hash, raw=resp)
+    return ExecResult(
+        action="open", tx_hash=tx_hash, raw=resp, execution_id=execution_id
+    )
 
 
 def close_position(
@@ -101,6 +173,7 @@ def close_position(
     cfg: BotConfig,
     mcp: MCPClient,
     signer=None,
+    journal: Optional[ExecutionJournal] = None,
 ) -> ExecResult:
     """
     Close a leveraged position and return to flat USDC.
@@ -128,7 +201,16 @@ def close_position(
             log.warning("pre-close balance fetch failed: %s", e)
 
     resp = mcp.prepare_close(position_id=position_id)
-    tx_hash = signer.execute_steps(resp)
+    tx_hash, execution_id = _execute_steps(
+        signer,
+        resp,
+        journal,
+        "close",
+        position_id,
+        direction,
+        cfg,
+        {"asset_amount": asset_amount},
+    )
     log.info("close tx %s", tx_hash)
 
     # Swap asset→USDC after closing a long so bot is always flat in stable.
@@ -165,8 +247,22 @@ def close_position(
                         amount_in=received_asset,
                     )
                 )
-                swap_hash = signer.execute_steps(swap_resp)
+                swap_hash, swap_execution_id = _execute_steps(
+                    signer,
+                    swap_resp,
+                    journal,
+                    "close_proceeds_swap",
+                    position_id,
+                    direction,
+                    cfg,
+                    {"asset_amount": received_asset},
+                )
                 log.info("swap tx %s", swap_hash)
+                if journal is not None and swap_execution_id is not None:
+                    journal.mark_state_recorded(
+                        swap_execution_id,
+                        {"type": "auxiliary", "action": "close_proceeds_swap"},
+                    )
             except Exception as e:
                 # The Aave close is already confirmed. Record the close as
                 # complete so the bot does not retry and duplicate exposure;
@@ -176,9 +272,12 @@ def close_position(
                     action="close",
                     tx_hash=tx_hash,
                     raw={**resp, "post_close_swap_error": str(e)},
+                    execution_id=execution_id,
                 )
 
-    return ExecResult(action="close", tx_hash=tx_hash, raw=resp)
+    return ExecResult(
+        action="close", tx_hash=tx_hash, raw=resp, execution_id=execution_id
+    )
 
 
 def increase_position(
@@ -188,6 +287,7 @@ def increase_position(
     cfg: BotConfig,
     mcp: MCPClient,
     signer=None,
+    journal: Optional[ExecutionJournal] = None,
 ) -> ExecResult:
     """Add to an existing leveraged position (moderate → strong signal upgrade)."""
     if direction == "short":
@@ -229,9 +329,20 @@ def increase_position(
         supply_asset=supply_asset,
         borrow_asset=borrow_asset,
     )
-    tx_hash = signer.execute_steps(resp)
+    tx_hash, execution_id = _execute_steps(
+        signer,
+        resp,
+        journal,
+        "increase",
+        position_id,
+        direction,
+        cfg,
+        {"supply": amount, "borrow": size.borrow},
+    )
     log.info("increase %s tx %s", direction, tx_hash)
-    return ExecResult(action="increase", tx_hash=tx_hash, raw=resp)
+    return ExecResult(
+        action="increase", tx_hash=tx_hash, raw=resp, execution_id=execution_id
+    )
 
 
 def reduce_position(
@@ -241,6 +352,7 @@ def reduce_position(
     cfg: BotConfig,
     mcp: MCPClient,
     signer=None,
+    journal: Optional[ExecutionJournal] = None,
 ) -> ExecResult:
     if direction == "short":
         supply_asset = "USDC"
@@ -267,6 +379,17 @@ def reduce_position(
         borrow_asset=borrow_asset,
         target_leverage=target_leverage,
     )
-    tx_hash = signer.execute_steps(resp)
+    tx_hash, execution_id = _execute_steps(
+        signer,
+        resp,
+        journal,
+        "reduce",
+        position_id,
+        direction,
+        cfg,
+        {"target_leverage": target_leverage},
+    )
     log.info("reduce tx %s", tx_hash)
-    return ExecResult(action="reduce", tx_hash=tx_hash, raw=resp)
+    return ExecResult(
+        action="reduce", tx_hash=tx_hash, raw=resp, execution_id=execution_id
+    )

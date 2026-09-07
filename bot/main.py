@@ -31,6 +31,7 @@ import yaml
 
 import bot.executor as executor
 import bot.filters as filters
+import bot.heartbeat as heartbeat
 import bot.market as market
 import bot.ohlcv as ohlcv
 import bot.pnl as pnl
@@ -38,19 +39,17 @@ import bot.signal as signal
 import bot.sizing as sizing
 import bot.state as state
 from bot.config import BotConfig
+from bot.journal import ExecutionJournal
 from bot.mcp_client import MCPClient
 from bot.onchain import canonical_asset
 from bot.swaps import inject_swap_approve
 
 log = logging.getLogger(__name__)
 
-# Aave v3 Base liquidation thresholds per supply asset (basis: on-chain reserve config)
-_LIQ_THRESHOLD: dict[str, float] = {
-    "WETH": 0.83,
-    "wstETH": 0.82,
-    "cbBTC": 0.78,
-    "USDC": 0.78,  # used as supply asset in short positions
-}
+# Conservative paper-mode fallback only. Live positions use the Aave reserve
+# configuration read from the current Base Pool; this value is never used for
+# live risk decisions.
+_PAPER_LIQ_THRESHOLD_FALLBACK = 0.78
 
 
 def _paper_health_factor(
@@ -59,6 +58,8 @@ def _paper_health_factor(
     cfg: BotConfig,
     eff_supply: float = 0.0,
     eff_borrow: float = 0.0,
+    liquidation_threshold: Optional[float] = None,
+    borrow_liquidation_threshold: Optional[float] = None,
 ) -> float:
     """
     Compute a simulated health factor for a paper position.
@@ -82,13 +83,13 @@ def _paper_health_factor(
     borrow = eff_borrow if eff_borrow > 0 else float(open_trade.get("borrow", 0))
     leverage = float(open_trade.get("leverage", 2.0))
     if direction == "short":
-        lt = _LIQ_THRESHOLD.get("USDC", 0.78)
+        lt = borrow_liquidation_threshold or _PAPER_LIQ_THRESHOLD_FALLBACK
         debt_usd = borrow * price
         if debt_usd <= 0:
             return 999.0
         return (leverage * supply * lt) / debt_usd
     else:
-        lt = _LIQ_THRESHOLD.get(cfg.asset, 0.80)
+        lt = liquidation_threshold or _PAPER_LIQ_THRESHOLD_FALLBACK
         if borrow <= 0:
             return 999.0
         # True Aave supply = leverage×seed; supply stored as 1×seed, so multiply back.
@@ -97,7 +98,11 @@ def _paper_health_factor(
 
 
 def _projected_health_factor(
-    direction: str, price: float, size, cfg: BotConfig
+    direction: str,
+    price: float,
+    size,
+    cfg: BotConfig,
+    liquidation_threshold: Optional[float] = None,
 ) -> float:
     """Estimate the opening HF from the requested seed and effective leverage."""
     if price <= 0 or size.supply <= 0 or size.borrow <= 0:
@@ -111,6 +116,7 @@ def _projected_health_factor(
         },
         price,
         cfg,
+        liquidation_threshold=liquidation_threshold,
     )
 
 
@@ -228,6 +234,109 @@ def _chain_position_size(
     return atoken_balance, variable_debt
 
 
+def _liquidity_escape_reason(
+    data: market.MarketData,
+    entries: list[dict],
+    cfg: BotConfig,
+    direction: str,
+) -> Optional[str]:
+    """Return the highest-priority liquidity escape reason for an open position."""
+    prev_usdc_util, _ = state.get_last_utilizations(entries)
+    prev_short_asset_util = state.get_last_short_asset_utilization(entries)
+
+    if direction == "long":
+        flash_util = data.usdc_utilization
+        prev_flash_util = prev_usdc_util
+        flash_frozen = data.borrow_asset_frozen
+        flash_paused = data.borrow_asset_paused
+        supply_paused = data.asset_paused
+    else:
+        flash_util = data.short_asset_utilization
+        prev_flash_util = prev_short_asset_util
+        flash_frozen = data.short_asset_frozen
+        flash_paused = data.short_asset_paused
+        supply_paused = data.borrow_asset_paused
+
+    if flash_paused or supply_paused:
+        return "liquidity_escape_paused"
+    if flash_frozen:
+        return "liquidity_escape_frozen"
+    if flash_util is not None and flash_util > cfg.liquidity_escape_utilization:
+        return "liquidity_escape_utilization"
+    if (
+        flash_util is not None
+        and prev_flash_util is not None
+        and flash_util - prev_flash_util > cfg.liquidity_escape_velocity
+    ):
+        return "liquidity_escape_velocity"
+    return None
+
+
+def _projected_liquidation_threshold(
+    data: market.MarketData, direction: str
+) -> Optional[float]:
+    """Select the live reserve/eMode threshold for a prospective position."""
+    reserve_category = (
+        data.reserve_emode_category
+        if direction == "long"
+        else data.borrow_reserve_emode_category
+    )
+    if (
+        data.user_emode_category
+        and data.user_emode_category == reserve_category
+        and data.emode_liquidation_threshold
+    ):
+        return data.emode_liquidation_threshold
+    return (
+        data.reserve_liquidation_threshold
+        if direction == "long"
+        else data.borrow_reserve_liquidation_threshold
+    )
+
+
+def _risk_data_is_fresh(data: market.MarketData, cfg: BotConfig) -> bool:
+    if not data.risk_data_available or not data.risk_fetched_at:
+        return False
+    try:
+        fetched = datetime.fromisoformat(data.risk_fetched_at.replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - fetched).total_seconds()
+        return 0 <= age <= cfg.risk_config_max_age_seconds
+    except (TypeError, ValueError):
+        return False
+
+
+def _record_execution(
+    journal: Optional[ExecutionJournal], result: object, event: Optional[dict] = None
+) -> None:
+    """Close the journal state/event gap after the JSONL payload is assembled."""
+    execution_id = getattr(result, "execution_id", None)
+    if journal is not None and execution_id:
+        journal.mark_state_recorded(execution_id, event)
+
+
+def _refresh_journal_receipts(
+    journal: Optional[ExecutionJournal], signer=None
+) -> list[dict]:
+    """Refresh known receipt statuses without resubmitting any transaction."""
+    if journal is None:
+        return []
+    for record in journal.recoverable():
+        tx_hash = record.get("tx_hash")
+        if not tx_hash or signer is None or not hasattr(signer, "w3"):
+            continue
+        try:
+            receipt = signer.w3.eth.get_transaction_receipt(tx_hash)
+            if receipt.get("status") == 0:
+                journal.mark_failed(record["execution_id"], "transaction reverted")
+            else:
+                journal.mark_confirmed(record["execution_id"], tx_hash, dict(receipt))
+        except Exception:
+            # Pending/not-yet-indexed receipts remain recoverable. The caller
+            # will safe-hold rather than guessing whether an action landed.
+            continue
+    return journal.recoverable()
+
+
 def _build_signer(cfg: BotConfig):
     if cfg.paper_trading:
         return None
@@ -256,6 +365,7 @@ def _ensure_wallet_token(
     mcp: MCPClient,
     signer,
     cycle_entry: dict,
+    journal: Optional[ExecutionJournal] = None,
 ) -> bool | None:
     """
     Ensure the wallet holds the correct token before opening a position.
@@ -281,12 +391,29 @@ def _ensure_wallet_token(
     )
 
     def _swap_asset_to_usdc(tok: str, qty: float) -> None:
-        swap_hash = signer.execute_steps(
-            inject_swap_approve(mcp.swap(tok, "USDC", qty))
+        swap_hash, execution_id = executor._execute_steps(
+            signer,
+            inject_swap_approve(mcp.swap(tok, "USDC", qty)),
+            journal,
+            "pre_open_swap",
+            None,
+            direction,
+            cfg,
+            {"token_in": tok, "token_out": "USDC", "amount_in": qty},
         )
         cycle_entry["pre_swap"] = f"{qty:.6f} {tok} → USDC (tx={swap_hash})"
         log.info("waiting for swap confirmation: %s", swap_hash)
         signer.wait_for_receipt(swap_hash)
+        if journal is not None and execution_id is not None:
+            journal.mark_state_recorded(
+                execution_id,
+                {
+                    "type": "auxiliary",
+                    "action": "pre_open_swap",
+                    "token_in": tok,
+                    "token_out": "USDC",
+                },
+            )
         time.sleep(
             3
         )  # brief pause for RPC propagation before prepare_open reads balance
@@ -369,14 +496,35 @@ def _ensure_wallet_token(
                 asset_val_usd,
                 supply_needed_usd,
             )
-            swap_hash = signer.execute_steps(
-                inject_swap_approve(mcp.swap("USDC", cfg.asset, swap_usd))
+            swap_hash, execution_id = executor._execute_steps(
+                signer,
+                inject_swap_approve(mcp.swap("USDC", cfg.asset, swap_usd)),
+                journal,
+                "pre_open_swap",
+                None,
+                direction,
+                cfg,
+                {
+                    "token_in": "USDC",
+                    "token_out": cfg.asset,
+                    "amount_in": swap_usd,
+                },
             )
             cycle_entry["pre_swap"] = (
                 f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
             )
             log.info("waiting for swap confirmation: %s", swap_hash)
             signer.wait_for_receipt(swap_hash)
+            if journal is not None and execution_id is not None:
+                journal.mark_state_recorded(
+                    execution_id,
+                    {
+                        "type": "auxiliary",
+                        "action": "pre_open_swap",
+                        "token_in": "USDC",
+                        "token_out": cfg.asset,
+                    },
+                )
             time.sleep(
                 3
             )  # brief pause for RPC propagation before prepare_open reads balance
@@ -401,7 +549,11 @@ def _ensure_wallet_token(
 
 
 def run_cycle(
-    cfg: BotConfig, raw_cfg: dict, signer=None, mcp: MCPClient = None
+    cfg: BotConfig,
+    raw_cfg: dict,
+    signer=None,
+    mcp: MCPClient = None,
+    journal: Optional[ExecutionJournal] = None,
 ) -> dict:
     """Run one full strategy cycle. Returns the cycle log entry."""
     if mcp is None:
@@ -416,8 +568,34 @@ def run_cycle(
     if signer is None:
         signer = _build_signer(cfg)
 
-    # ── 1. State ──────────────────────────────────────────────────────────
-    entries = state.load_entries(cfg.trades_file)
+    # ── 1. State and transaction recovery ─────────────────────────────────
+    entries, recovered_tail = state.load_entries_with_recovery(cfg.trades_file)
+    unresolved = _refresh_journal_receipts(journal, signer)
+    if unresolved:
+        recovery_entry = {
+            "type": "cycle",
+            "ts": state.now_iso(),
+            "asset": cfg.asset,
+            "decision": "skip_execution_recovery",
+            "unresolved_executions": [
+                {
+                    "execution_id": record.get("execution_id"),
+                    "action": record.get("action"),
+                    "status": record.get("status"),
+                    "tx_hash": record.get("tx_hash"),
+                }
+                for record in unresolved
+            ],
+        }
+        if recovered_tail:
+            recovery_entry["state_recovery_file"] = recovered_tail
+        log.critical(
+            "Unresolved execution journal entries remain; safe-holding this cycle: %s",
+            [record.get("execution_id") for record in unresolved],
+        )
+        state.append_entry(cfg.trades_file, recovery_entry)
+        return recovery_entry
+
     open_trade: Optional[dict] = state.get_open_trade(entries)
     btc_dom_prev: Optional[float] = state.get_last_btc_dominance(entries)
     eff_supply, eff_borrow, eff_entry_price = state.get_effective_size(
@@ -439,7 +617,13 @@ def run_cycle(
     # and should not influence paper trading decisions.
     if cfg.paper_trading:
         data.health_factor = _paper_health_factor(
-            open_trade, data.price, cfg, eff_supply, eff_borrow
+            open_trade,
+            data.price,
+            cfg,
+            eff_supply,
+            eff_borrow,
+            data.reserve_liquidation_threshold,
+            data.borrow_reserve_liquidation_threshold,
         )
 
     # ── 3. Signal ─────────────────────────────────────────────────────────
@@ -498,6 +682,19 @@ def run_cycle(
         "wallet_collateral_usd": round(data.wallet_collateral_usd, 2),
         "position_data_available": data.position_available,
         "onchain_data_available": data.onchain_available,
+        "risk_data_available": data.risk_data_available,
+        "reserve_ltv": data.reserve_ltv,
+        "reserve_liquidation_threshold": data.reserve_liquidation_threshold,
+        "reserve_emode_category": data.reserve_emode_category,
+        "borrow_reserve_ltv": data.borrow_reserve_ltv,
+        "borrow_reserve_liquidation_threshold": data.borrow_reserve_liquidation_threshold,
+        "borrow_reserve_emode_category": data.borrow_reserve_emode_category,
+        "account_ltv": data.account_ltv,
+        "account_liquidation_threshold": data.account_liquidation_threshold,
+        "user_emode_category": data.user_emode_category,
+        "emode_liquidation_threshold": data.emode_liquidation_threshold,
+        "risk_block": data.risk_block,
+        "risk_fetched_at": data.risk_fetched_at,
         "sources_failed": sources_failed,
         "paper_trading": cfg.paper_trading,
         "cg_signal": cg_sig.label,
@@ -511,7 +708,48 @@ def run_cycle(
         "tech_macd_bull": tech.macd_bull if tech is not None else None,
         "tech_adx": tech.adx if tech is not None else None,
         "tech_volume_ratio": tech.volume_ratio if tech is not None else None,
+        "asset_frozen": data.asset_frozen,
+        "asset_paused": data.asset_paused,
+        "borrow_asset_frozen": data.borrow_asset_frozen,
+        "borrow_asset_paused": data.borrow_asset_paused,
+        "short_asset_frozen": data.short_asset_frozen,
+        "short_asset_paused": data.short_asset_paused,
+        "strategy_config": {
+            "take_profit_pct": cfg.take_profit_pct,
+            "stop_loss_pct": cfg.stop_loss_pct,
+            "max_volatility_1h": cfg.max_volatility_1h,
+            "max_borrow_apr": cfg.max_borrow_apr,
+            "btc_dominance_rise_threshold": cfg.btc_dominance_rise_threshold,
+            "max_usdc_utilization": cfg.max_usdc_utilization,
+            "max_recent_liquidations": cfg.max_recent_liquidations,
+            "require_strong_short": cfg.require_strong_short,
+            "moderate_short_min_7d_change": cfg.moderate_short_min_7d_change,
+            "require_ema_bull_long": cfg.require_ema_bull_long,
+            "min_rsi_long": cfg.min_rsi_long,
+            "signal_reversal_exit": cfg.signal_reversal_exit,
+            "signal_reversal_min_score": cfg.signal_reversal_min_score,
+            "min_hold_hours": cfg.min_hold_hours,
+            "tp_on_strong_signal": cfg.tp_on_strong_signal,
+            "max_hold_days": cfg.max_hold_days,
+            "long_max_hold_days": cfg.long_max_hold_days,
+            "trailing_stop_pct": cfg.trailing_stop_pct,
+            "long_trailing_stop_pct": cfg.long_trailing_stop_pct,
+            "short_trailing_stop_pct": cfg.short_trailing_stop_pct,
+            "post_tp_gate_hours": cfg.post_tp_gate_hours,
+            "post_trailing_stop_gate_hours": cfg.post_trailing_stop_gate_hours,
+            "post_max_hold_gate_hours": cfg.post_max_hold_gate_hours,
+            "liquidity_escape_utilization": cfg.liquidity_escape_utilization,
+            "liquidity_escape_velocity": cfg.liquidity_escape_velocity,
+            "max_funding_rate_long": cfg.max_funding_rate_long,
+            "max_funding_rate_short": cfg.max_funding_rate_short,
+            "max_fear_greed_long": cfg.max_fear_greed_long,
+            "min_fear_greed_short": cfg.min_fear_greed_short,
+            "fear_greed_short_rsi_floor": cfg.fear_greed_short_rsi_floor,
+            "min_volume_24h_usd": cfg.min_volume_24h_usd,
+        },
     }
+    if recovered_tail:
+        cycle_entry["state_recovery_file"] = recovered_tail
 
     if not cfg.paper_trading and (
         not data.position_available or not data.onchain_available
@@ -568,6 +806,41 @@ def run_cycle(
     )
     pos_id = _position_id_for(open_direction, cfg, raw_cfg)
 
+    # Liquidity escape is deliberately evaluated before ordinary HF defense.
+    # A reduce route can depend on the same reserve that is becoming unavailable.
+    if open_trade is not None and not cfg.paper_trading:
+        escape_reason = _liquidity_escape_reason(data, entries, cfg, open_direction)
+        if escape_reason:
+            log.critical(
+                "EMERGENCY %s: closing %s position before HF defense",
+                escape_reason,
+                open_direction,
+            )
+            res = executor.close_position(
+                pos_id,
+                open_direction,
+                eff_supply,
+                cfg,
+                mcp,
+                signer,
+                journal,
+            )
+            trade_entry = _close_trade_entry(
+                open_trade,
+                data.price,
+                cfg,
+                escape_reason,
+                res,
+                eff_supply,
+                eff_borrow,
+                eff_entry_price,
+            )
+            cycle_entry["decision"] = escape_reason
+            state.append_entry(cfg.trades_file, cycle_entry)
+            state.append_entry(cfg.trades_file, trade_entry)
+            _record_execution(journal, res, trade_entry)
+            return cycle_entry
+
     # ── 4. Health-factor defense ──────────────────────────────────────────
     if open_trade is not None:
         hf = data.health_factor
@@ -589,6 +862,7 @@ def run_cycle(
                 cfg,
                 mcp,
                 signer,
+                journal,
             )
             trade_entry = _close_trade_entry(
                 open_trade,
@@ -602,13 +876,14 @@ def run_cycle(
             )
             state.append_entry(cfg.trades_file, cycle_entry | {"decision": "hf_close"})
             state.append_entry(cfg.trades_file, trade_entry)
+            _record_execution(journal, res, trade_entry)
             return cycle_entry
 
         if hf < hf_reduce:
             log.warning("HF %.3f < %.3f — reduce", hf, hf_reduce)
             target_lev = max(cfg.leverage_for(open_direction) / 2, 1.5)
             res = executor.reduce_position(
-                pos_id, open_direction, target_lev, cfg, mcp, signer
+                pos_id, open_direction, target_lev, cfg, mcp, signer, journal
             )
             reduce_entry = {
                 "type": "trade",
@@ -642,103 +917,7 @@ def run_cycle(
             cycle_entry["decision"] = "hf_reduce"
             state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, reduce_entry)
-            return cycle_entry
-
-    # ── 4a. Liquidity escape ──────────────────────────────────────────────
-    # Close an open position proactively when pool liquidity is drying up.
-    # We rely on flash loans to close — if the flash-loan asset's pool hits
-    # 100% utilization we can't close at all. Exit well before that point.
-    #
-    # For longs  (flash USDC):       watch usdc_utilization
-    # For shorts (flash borrow asset): watch asset_utilization
-    #
-    # Also close immediately on Aave governance freeze/pause of any involved
-    # asset (e.g. KelpDAO-style incident).
-    if open_trade is not None and not cfg.paper_trading:
-        prev_usdc_util, _ = state.get_last_utilizations(entries)
-        prev_short_asset_util = state.get_last_short_asset_utilization(entries)
-
-        if open_direction == "long":
-            flash_util = data.usdc_utilization
-            prev_flash_util = prev_usdc_util
-            flash_frozen = data.borrow_asset_frozen  # USDC frozen → no flash loan
-            flash_paused = data.borrow_asset_paused  # USDC paused → nothing works
-            supply_paused = data.asset_paused  # supply asset paused → can't withdraw
-        else:
-            flash_util = data.short_asset_utilization
-            prev_flash_util = prev_short_asset_util
-            flash_frozen = (
-                data.short_asset_frozen
-            )  # borrowed asset frozen → no flash loan
-            flash_paused = (
-                data.short_asset_paused
-            )  # borrowed asset paused → nothing works
-            supply_paused = data.borrow_asset_paused  # USDC paused → can't withdraw
-
-        escape_reason: Optional[str] = None
-
-        if flash_paused or supply_paused:
-            escape_reason = "liquidity_escape_paused"
-            log.critical(
-                "EMERGENCY: asset paused on Aave (flash_paused=%s supply_paused=%s) "
-                "— closing %s position immediately",
-                flash_paused,
-                supply_paused,
-                open_direction,
-            )
-        elif flash_frozen:
-            escape_reason = "liquidity_escape_frozen"
-            log.warning(
-                "Flash-loan asset frozen on Aave — closing %s position immediately",
-                open_direction,
-            )
-        elif flash_util is not None and flash_util > cfg.liquidity_escape_utilization:
-            escape_reason = "liquidity_escape_utilization"
-            log.warning(
-                "Flash-asset pool utilization %.1f%% > %.1f%% threshold "
-                "— closing %s position before liquidity dries up",
-                flash_util * 100,
-                cfg.liquidity_escape_utilization * 100,
-                open_direction,
-            )
-        elif (
-            flash_util is not None
-            and prev_flash_util is not None
-            and (flash_util - prev_flash_util) > cfg.liquidity_escape_velocity
-        ):
-            escape_reason = "liquidity_escape_velocity"
-            log.warning(
-                "Flash-asset pool utilization jumped %.1f→%.1f%% (delta=%.1f%%) "
-                "in one cycle — closing %s position before cascade",
-                prev_flash_util * 100,
-                flash_util * 100,
-                (flash_util - prev_flash_util) * 100,
-                open_direction,
-            )
-
-        if escape_reason:
-            res = executor.close_position(
-                pos_id,
-                open_direction,
-                eff_supply,
-                cfg,
-                mcp,
-                signer,
-            )
-            trade_entry = _close_trade_entry(
-                open_trade,
-                data.price,
-                cfg,
-                escape_reason,
-                res,
-                eff_supply,
-                eff_borrow,
-                eff_entry_price,
-            )
-            state.append_entry(
-                cfg.trades_file, cycle_entry | {"decision": escape_reason}
-            )
-            state.append_entry(cfg.trades_file, trade_entry)
+            _record_execution(journal, res, reduce_entry)
             return cycle_entry
 
     # ── 5. Exit check (TP / SL) on open position ──────────────────────────
@@ -791,7 +970,7 @@ def run_cycle(
         if exit_reason:
             log.info("Exit triggered: %s %.2f%%", exit_reason, p.unrealised_pct)
             res = executor.close_position(
-                pos_id, open_direction, supply_units, cfg, mcp, signer
+                pos_id, open_direction, supply_units, cfg, mcp, signer, journal
             )
             trade_entry = _close_trade_entry(
                 open_trade,
@@ -806,6 +985,7 @@ def run_cycle(
             cycle_entry["decision"] = exit_reason
             state.append_entry(cfg.trades_file, cycle_entry)
             state.append_entry(cfg.trades_file, trade_entry)
+            _record_execution(journal, res, trade_entry)
             return cycle_entry
 
     # ── 5a. Trailing stop ─────────────────────────────────────────────
@@ -852,7 +1032,7 @@ def run_cycle(
                         _trail_pct,
                     )
                     res = executor.close_position(
-                        pos_id, open_direction, supply_units, cfg, mcp, signer
+                        pos_id, open_direction, supply_units, cfg, mcp, signer, journal
                     )
                     trade_entry = _close_trade_entry(
                         open_trade,
@@ -867,6 +1047,7 @@ def run_cycle(
                     cycle_entry["decision"] = "trailing_stop"
                     state.append_entry(cfg.trades_file, cycle_entry)
                     state.append_entry(cfg.trades_file, trade_entry)
+                    _record_execution(journal, res, trade_entry)
                     return cycle_entry
 
     # ── 5b. Signal reversal exit ──────────────────────────────────────
@@ -911,7 +1092,7 @@ def run_cycle(
                     sig.score,
                 )
                 res = executor.close_position(
-                    pos_id, open_direction, supply_units, cfg, mcp, signer
+                    pos_id, open_direction, supply_units, cfg, mcp, signer, journal
                 )
                 trade_entry = _close_trade_entry(
                     open_trade,
@@ -926,6 +1107,7 @@ def run_cycle(
                 cycle_entry["decision"] = "signal_reversal"
                 state.append_entry(cfg.trades_file, cycle_entry)
                 state.append_entry(cfg.trades_file, trade_entry)
+                _record_execution(journal, res, trade_entry)
                 return cycle_entry
 
     # ── 5b. Time-based exit ───────────────────────────────────────────
@@ -960,7 +1142,7 @@ def run_cycle(
                         _max_hold,
                     )
                     res = executor.close_position(
-                        pos_id, open_direction, supply_units, cfg, mcp, signer
+                        pos_id, open_direction, supply_units, cfg, mcp, signer, journal
                     )
                     trade_entry = _close_trade_entry(
                         open_trade,
@@ -975,6 +1157,7 @@ def run_cycle(
                     cycle_entry["decision"] = "max_hold_days"
                     state.append_entry(cfg.trades_file, cycle_entry)
                     state.append_entry(cfg.trades_file, trade_entry)
+                    _record_execution(journal, res, trade_entry)
                     return cycle_entry
             except (ValueError, TypeError):
                 pass  # malformed ts — skip time exit this cycle
@@ -993,6 +1176,13 @@ def run_cycle(
         )
 
         if signal_upgraded:
+            if not cfg.paper_trading and not _risk_data_is_fresh(data, cfg):
+                log.warning(
+                    "Dynamic Aave risk data unavailable — refusing position increase"
+                )
+                cycle_entry["decision"] = "skip_risk_config_unavailable"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
             current_seed = float(open_trade.get("seed_usd", 0))
             eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
             delta = sizing.compute_increase(
@@ -1005,7 +1195,7 @@ def run_cycle(
                     delta.seed_usd,
                 )
                 res = executor.increase_position(
-                    delta, open_direction, pos_id, cfg, mcp, signer
+                    delta, open_direction, pos_id, cfg, mcp, signer, journal
                 )
                 increase_entry = {
                     "type": "trade",
@@ -1025,6 +1215,7 @@ def run_cycle(
                 cycle_entry["decision"] = f"increase_{open_direction}"
                 state.append_entry(cfg.trades_file, cycle_entry)
                 state.append_entry(cfg.trades_file, increase_entry)
+                _record_execution(journal, res, increase_entry)
                 return cycle_entry
 
     # ── 6. No-trade filters ───────────────────────────────────────────────
@@ -1228,6 +1419,11 @@ def run_cycle(
         return cycle_entry
 
     if open_trade is None and sig.multiplier > 0:
+        if not cfg.paper_trading and not _risk_data_is_fresh(data, cfg):
+            log.warning("Dynamic Aave risk data unavailable — refusing new exposure")
+            cycle_entry["decision"] = "skip_risk_config_unavailable"
+            state.append_entry(cfg.trades_file, cycle_entry)
+            return cycle_entry
         eff_collateral = data.total_collateral_usd or data.wallet_collateral_usd
         size = sizing.compute(eff_collateral, data.price, sig, cfg)
         if size.supply <= 0:
@@ -1244,7 +1440,14 @@ def run_cycle(
             sig.direction == "short" or data.total_collateral_usd == 0
         ):
             swapped = _ensure_wallet_token(
-                sig.direction, size.seed_usd, data, cfg, mcp, signer, cycle_entry
+                sig.direction,
+                size.seed_usd,
+                data,
+                cfg,
+                mcp,
+                signer,
+                cycle_entry,
+                journal,
             )
             if swapped is False:
                 # Insufficient funds — already appended cycle entry
@@ -1268,7 +1471,13 @@ def run_cycle(
                     )
 
         min_hf = cfg.short_min_open_hf if sig.direction == "short" else cfg.min_open_hf
-        projected_hf = _projected_health_factor(sig.direction, data.price, size, cfg)
+        projected_hf = _projected_health_factor(
+            sig.direction,
+            data.price,
+            size,
+            cfg,
+            _projected_liquidation_threshold(data, sig.direction),
+        )
         cycle_entry["projected_health_factor"] = round(projected_hf, 4)
         if projected_hf < min_hf:
             log.info(
@@ -1288,7 +1497,9 @@ def run_cycle(
             size.supply,
             size.borrow,
         )
-        res = executor.open_position(size, sig.direction, new_pos_id, cfg, mcp, signer)
+        res = executor.open_position(
+            size, sig.direction, new_pos_id, cfg, mcp, signer, journal
+        )
 
         # Reconcile logged supply/borrow against on-chain actuals.
         # The MCP vault may adjust the seed (e.g. gas rounding, existing Aave balance)
@@ -1373,6 +1584,7 @@ def run_cycle(
         cycle_entry["decision"] = f"open_{sig.direction}"
         state.append_entry(cfg.trades_file, cycle_entry)
         state.append_entry(cfg.trades_file, trade_entry)
+        _record_execution(journal, res, trade_entry)
         return cycle_entry
 
     # ── 8. Hold ───────────────────────────────────────────────────────────
@@ -1448,6 +1660,7 @@ def main() -> None:
     cfg = BotConfig.load(args.config)
     raw_cfg = yaml.safe_load(open(args.config).read())
     _instance_lock = state.acquire_process_lock(cfg.trades_file)
+    journal = ExecutionJournal(cfg.runtime_journal_file())
 
     mode = "PAPER" if cfg.paper_trading else "LIVE"
     log.info(
@@ -1455,6 +1668,16 @@ def main() -> None:
         cfg.asset,
         cfg.short_borrow_asset,
         mode,
+    )
+    heartbeat.write(
+        cfg.runtime_heartbeat_file(),
+        {
+            "status": "starting",
+            "updated_at": state.now_iso(),
+            "asset": cfg.asset,
+            "paper_trading": cfg.paper_trading,
+            "unresolved_execution_count": len(journal.recoverable()),
+        },
     )
 
     # Build signer and MCP client once outside the loop.
@@ -1475,30 +1698,78 @@ def main() -> None:
     if args.loop > 0:
         while True:
             try:
-                result = run_cycle(cfg, raw_cfg, signer, mcp)
+                result = run_cycle(cfg, raw_cfg, signer, mcp, journal)
                 log.info(
                     "Cycle done — decision=%s direction=%s price=%.2f",
                     result.get("decision"),
                     result.get("direction"),
                     result.get("price", 0),
                 )
+                heartbeat.write(
+                    cfg.runtime_heartbeat_file(),
+                    {
+                        "status": "ok",
+                        "updated_at": state.now_iso(),
+                        "last_decision": result.get("decision"),
+                        "last_price": result.get("price"),
+                        "last_health_factor": result.get("health_factor"),
+                        "unresolved_execution_count": len(journal.recoverable()),
+                        "asset": cfg.asset,
+                        "paper_trading": cfg.paper_trading,
+                    },
+                )
             except Exception as e:
                 log.error("Cycle error: %s", e, exc_info=True)
                 if signer:
                     signer.reset_nonce()  # force re-fetch after any error
+                heartbeat.write(
+                    cfg.runtime_heartbeat_file(),
+                    {
+                        "status": "error",
+                        "updated_at": state.now_iso(),
+                        "error": f"{type(e).__name__}: {e}"[:1000],
+                        "unresolved_execution_count": len(journal.recoverable()),
+                        "asset": cfg.asset,
+                        "paper_trading": cfg.paper_trading,
+                    },
+                )
             log.info("Sleeping %ds…", args.loop)
             time.sleep(args.loop)
     else:
         try:
-            result = run_cycle(cfg, raw_cfg, signer, mcp)
+            result = run_cycle(cfg, raw_cfg, signer, mcp, journal)
             log.info(
                 "Cycle done — decision=%s direction=%s price=%.2f",
                 result.get("decision"),
                 result.get("direction"),
                 result.get("price", 0),
             )
+            heartbeat.write(
+                cfg.runtime_heartbeat_file(),
+                {
+                    "status": "ok",
+                    "updated_at": state.now_iso(),
+                    "last_decision": result.get("decision"),
+                    "last_price": result.get("price"),
+                    "last_health_factor": result.get("health_factor"),
+                    "unresolved_execution_count": len(journal.recoverable()),
+                    "asset": cfg.asset,
+                    "paper_trading": cfg.paper_trading,
+                },
+            )
         except Exception as e:
             log.error("Cycle error: %s", e, exc_info=True)
+            heartbeat.write(
+                cfg.runtime_heartbeat_file(),
+                {
+                    "status": "error",
+                    "updated_at": state.now_iso(),
+                    "error": f"{type(e).__name__}: {e}"[:1000],
+                    "unresolved_execution_count": len(journal.recoverable()),
+                    "asset": cfg.asset,
+                    "paper_trading": cfg.paper_trading,
+                },
+            )
             sys.exit(1)
 
 

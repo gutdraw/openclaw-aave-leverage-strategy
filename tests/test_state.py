@@ -6,6 +6,7 @@ from bot.state import (
     get_last_btc_dominance,
     get_open_trade,
     load_entries,
+    load_entries_with_recovery,
     now_iso,
 )
 
@@ -29,6 +30,17 @@ def test_append_and_load():
     entries = load_entries(path)
     assert len(entries) == 2
     assert entries[0]["x"] == 1
+
+
+def test_recovers_incomplete_final_line_and_preserves_quarantine(tmp_path: Path):
+    path = tmp_path / "trades.jsonl"
+    path.write_bytes(b'{"type":"cycle","x":1}\n{"type":"cycle"')
+
+    entries, recovery_path = load_entries_with_recovery(str(path))
+
+    assert entries == [{"type": "cycle", "x": 1}]
+    assert recovery_path is not None
+    assert Path(recovery_path).read_bytes() == b'{"type":"cycle"'
 
 
 def test_get_open_trade_none_when_empty():

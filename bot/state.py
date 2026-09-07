@@ -6,6 +6,8 @@ All entries are immutable once written — never update or delete lines.
 import fcntl
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -31,6 +33,56 @@ def load_entries(path: str) -> list[dict]:
         except json.JSONDecodeError as e:
             raise ValueError(f"malformed state line {i} in {path}") from e
     return entries
+
+
+def load_entries_with_recovery(path: str) -> tuple[list[dict], Optional[str]]:
+    """Load state and quarantine only an incomplete final JSONL line.
+
+    A complete malformed line is never silently discarded. The only automatic
+    repair allowed is a process-crash tail without a terminating newline; that
+    tail is copied to a timestamped recovery file before the valid prefix is
+    atomically restored.
+    """
+    p = Path(path)
+    if not p.exists():
+        return [], None
+
+    raw = p.read_bytes()
+    lines = raw.splitlines(keepends=True)
+    valid: list[bytes] = []
+    for index, line in enumerate(lines, 1):
+        if not line.strip():
+            valid.append(line)
+            continue
+        try:
+            json.loads(line)
+            valid.append(line)
+        except json.JSONDecodeError as exc:
+            is_final_partial = index == len(lines) and not line.endswith((b"\n", b"\r"))
+            if not is_final_partial:
+                raise ValueError(f"malformed state line {index} in {path}") from exc
+
+            recovery_path = p.with_name(
+                f"{p.name}.recovery-{now_iso().replace(':', '')}"
+            )
+            recovery_path.write_bytes(line)
+            fd, temp_name = tempfile.mkstemp(prefix=f".{p.name}.", dir=p.parent)
+            try:
+                with os.fdopen(fd, "wb") as repaired:
+                    repaired.write(b"".join(valid))
+                    repaired.flush()
+                    os.fsync(repaired.fileno())
+                os.replace(temp_name, p)
+            finally:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
+            log.error(
+                "Quarantined incomplete state tail from %s to %s",
+                path,
+                recovery_path,
+            )
+            return load_entries(path), str(recovery_path)
+    return load_entries(path), None
 
 
 def acquire_process_lock(path: str):
@@ -207,5 +259,7 @@ def append_entry(path: str, entry: dict) -> None:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
             f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
