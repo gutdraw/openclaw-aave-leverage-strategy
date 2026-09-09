@@ -2,6 +2,7 @@
 trades.jsonl
 *.sqlite3
 *.heartbeat.json
+*.alerts.json
 *.recovery-*
 config_changes.jsonl
 config.yml

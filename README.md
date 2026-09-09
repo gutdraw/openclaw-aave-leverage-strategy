@@ -176,14 +176,16 @@ openclaw-aave-leverage-strategy/
 ├── tests/                # Unit tests
 └── scripts/
     ├── buy_session.py    # Purchase MCP session token
-    └── check_health.py   # Heartbeat/journal health check
+    └── check_health.py   # Heartbeat/journal/health-factor check
 ```
 
 The live loop writes `trades.jsonl` as an audit export and uses a sibling SQLite
 execution journal for crash recovery. New swaps fail closed unless the MCP
 response includes a fresh quoted minimum output; the current legacy router shape
 also receives a client-side freshness deadline before signing. See `deploy/` for
-the systemd service and health-check timer templates. A future MCP upgrade can
+the systemd service and health-check timer templates. The timer records active
+and resolved service, journal, safety-hold, and health-factor alerts in
+`trades.alerts.json` and emits transitions to the systemd journal. A future MCP upgrade can
 add an on-chain router deadline without changing the bot policy.
 
 For historical analysis, `bot.backtest.run()` preserves the legacy parameter

@@ -22,8 +22,17 @@ systemctl status openclaw-aave-leverage-strategy.service
 journalctl -u openclaw-aave-leverage-strategy.service -f
 python scripts/check_health.py \
   --heartbeat trades.heartbeat.json \
-  --journal trades.sqlite3
+  --journal trades.sqlite3 \
+  --config my-config.yml \
+  --alerts trades.alerts.json
 ```
+
+The health check also compares a live heartbeat's health factor with the
+configured reduce/close thresholds. It writes durable active/resolved alert
+state to `trades.alerts.json` and emits transition messages to the systemd
+journal. Any active alert makes the health-check unit non-zero so ordinary
+systemd monitoring can surface it; critical alerts use a distinct exit code.
+No trading decision is changed by the checker.
 
 Do not run the service and the previous `screen` process at the same time. The
 existing `.lock` file is still the single-instance guard, but two processes must
