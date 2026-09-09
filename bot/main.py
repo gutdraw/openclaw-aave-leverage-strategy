@@ -52,6 +52,46 @@ log = logging.getLogger(__name__)
 _PAPER_LIQ_THRESHOLD_FALLBACK = 0.78
 
 
+def _heartbeat_strings(value: object, limit: int = 16) -> list[str]:
+    """Return a bounded string list suitable for the local heartbeat file."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item[:120] for item in value if isinstance(item, str)][:limit]
+
+
+def _heartbeat_source_labels(value: object) -> list[str]:
+    """Strip raw provider/API error details before writing heartbeat telemetry."""
+    labels = (
+        item.split(":", 1)[0].strip()
+        for item in _heartbeat_strings(value)
+        if item.strip()
+    )
+    return list(dict.fromkeys(label for label in labels if label))
+
+
+def _cycle_heartbeat_payload(
+    result: dict, cfg: BotConfig, journal: ExecutionJournal
+) -> dict:
+    """Build the successful-cycle heartbeat payload without raw error details."""
+    return {
+        "status": "ok",
+        "updated_at": state.now_iso(),
+        "last_decision": result.get("decision"),
+        "last_price": result.get("price"),
+        "last_health_factor": result.get("health_factor"),
+        "last_funding_rate": result.get("funding_rate"),
+        "last_funding_provider": result.get("funding_provider"),
+        "last_funding_sources_attempted": _heartbeat_strings(
+            result.get("funding_sources_attempted")
+        ),
+        "last_funding_failures": _heartbeat_strings(result.get("funding_failures")),
+        "last_sources_failed": _heartbeat_source_labels(result.get("sources_failed")),
+        "unresolved_execution_count": len(journal.recoverable()),
+        "asset": cfg.asset,
+        "paper_trading": cfg.paper_trading,
+    }
+
+
 def _paper_health_factor(
     open_trade: Optional[dict],
     price: float,
@@ -1712,16 +1752,7 @@ def main() -> None:
                 )
                 heartbeat.write(
                     cfg.runtime_heartbeat_file(),
-                    {
-                        "status": "ok",
-                        "updated_at": state.now_iso(),
-                        "last_decision": result.get("decision"),
-                        "last_price": result.get("price"),
-                        "last_health_factor": result.get("health_factor"),
-                        "unresolved_execution_count": len(journal.recoverable()),
-                        "asset": cfg.asset,
-                        "paper_trading": cfg.paper_trading,
-                    },
+                    _cycle_heartbeat_payload(result, cfg, journal),
                 )
             except Exception as e:
                 log.error("Cycle error: %s", e, exc_info=True)
@@ -1751,16 +1782,7 @@ def main() -> None:
             )
             heartbeat.write(
                 cfg.runtime_heartbeat_file(),
-                {
-                    "status": "ok",
-                    "updated_at": state.now_iso(),
-                    "last_decision": result.get("decision"),
-                    "last_price": result.get("price"),
-                    "last_health_factor": result.get("health_factor"),
-                    "unresolved_execution_count": len(journal.recoverable()),
-                    "asset": cfg.asset,
-                    "paper_trading": cfg.paper_trading,
-                },
+                _cycle_heartbeat_payload(result, cfg, journal),
             )
         except Exception as e:
             log.error("Cycle error: %s", e, exc_info=True)

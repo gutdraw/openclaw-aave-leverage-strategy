@@ -36,6 +36,13 @@ def _number(value: object) -> Optional[float]:
     return number if number == number else None
 
 
+def _telemetry_strings(value: object, limit: int = 16) -> list[str]:
+    """Return bounded heartbeat telemetry for safe alert messages."""
+    if not isinstance(value, list):
+        return []
+    return [item[:120] for item in value if isinstance(item, str)][:limit]
+
+
 def _thresholds(
     config_path: Optional[str],
     warning: Optional[float],
@@ -200,6 +207,46 @@ def collect_health(
                         f"last decision is {decision}",
                     )
                 )
+
+            if heartbeat.get("status") == "ok":
+                source_failures = _telemetry_strings(
+                    heartbeat.get("last_sources_failed")
+                )
+                non_funding_failures = [
+                    source for source in source_failures if source != "funding_rate"
+                ]
+                if non_funding_failures:
+                    issues.append(
+                        Alert(
+                            "market_data_degraded",
+                            "warning",
+                            "market data sources failed: "
+                            + ", ".join(non_funding_failures),
+                        )
+                    )
+
+                funding_provider = heartbeat.get("last_funding_provider")
+                if "last_funding_provider" in heartbeat and not (
+                    isinstance(funding_provider, str) and funding_provider.strip()
+                ):
+                    attempted = _telemetry_strings(
+                        heartbeat.get("last_funding_sources_attempted")
+                    )
+                    failures = _telemetry_strings(
+                        heartbeat.get("last_funding_failures")
+                    )
+                    details = ["funding provider unavailable"]
+                    if attempted:
+                        details.append("attempted=" + ",".join(attempted))
+                    if failures:
+                        details.append("failures=" + ",".join(failures))
+                    issues.append(
+                        Alert(
+                            "funding_rate_unavailable",
+                            "warning",
+                            "; ".join(details),
+                        )
+                    )
 
             if heartbeat.get("paper_trading") is False and warning is not None:
                 health_factor = _number(heartbeat.get("last_health_factor"))

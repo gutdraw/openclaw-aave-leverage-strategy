@@ -105,3 +105,57 @@ def test_collect_health_reads_configured_defense_thresholds(tmp_path):
             "health factor 1.080 is at or below 1.120",
         )
     ]
+
+
+def test_collect_health_flags_unavailable_funding_provider(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    write(
+        str(heartbeat),
+        {
+            "status": "ok",
+            "paper_trading": True,
+            "last_funding_provider": None,
+            "last_funding_sources_attempted": ["okx", "binance", "bybit"],
+            "last_funding_failures": [
+                "okx:timeout",
+                "binance:blocked_http_451",
+                "bybit:blocked_http_403",
+            ],
+            "last_sources_failed": ["funding_rate"],
+        },
+    )
+
+    result = collect_health(str(heartbeat), str(journal), max_age=3900)
+
+    assert result.issues == [
+        Alert(
+            "funding_rate_unavailable",
+            "warning",
+            "funding provider unavailable; "
+            "attempted=okx,binance,bybit; "
+            "failures=okx:timeout,binance:blocked_http_451,bybit:blocked_http_403",
+        )
+    ]
+
+
+def test_collect_health_flags_non_funding_market_source_failure(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    write(
+        str(heartbeat),
+        {
+            "status": "ok",
+            "paper_trading": True,
+            "last_funding_provider": "okx",
+            "last_sources_failed": ["coingecko_global", "fear_greed"],
+        },
+    )
+
+    result = collect_health(str(heartbeat), str(journal), max_age=3900)
+
+    assert result.issues == [
+        Alert(
+            "market_data_degraded",
+            "warning",
+            "market data sources failed: coingecko_global, fear_greed",
+        )
+    ]

@@ -32,6 +32,10 @@ configured reduce/close thresholds. It writes durable active/resolved alert
 state to `trades.alerts.json` and emits transition messages to the systemd
 journal. Any active alert makes the health-check unit non-zero so ordinary
 systemd monitoring can surface it; critical alerts use a distinct exit code.
+The heartbeat also records the selected funding provider and sanitized source
+failure labels. The checker raises warning alerts for
+`funding_rate_unavailable` and `market_data_degraded` when those signals are
+present.
 No trading decision is changed by the checker.
 
 Do not run the service and the previous `screen` process at the same time. The

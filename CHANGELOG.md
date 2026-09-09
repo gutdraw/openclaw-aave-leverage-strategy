@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — Market-source health telemetry
+
+- Successful cycle heartbeats now record the funding provider, attempted providers,
+  bounded funding failures, and sanitized market-source failure labels.
+- The health checker raises durable warning alerts for unavailable funding data or
+  degraded non-funding market sources without changing trading decisions.
+
 ## [1.9.0] — 2026-06-22
 
 ### Added — Strong-short-only entry filter + post-time-exit gate
