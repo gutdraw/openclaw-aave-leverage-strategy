@@ -130,10 +130,11 @@ max_borrow_apr: 8.0         # skip entries if USDC borrow APR > 8% (from get_pos
 max_volatility_1h: 5.0      # skip the entire cycle if 1h price move > 5% (spike risk)
 btc_dominance_rise_threshold: 2.0  # suppress longs if BTC dominance rose > 2% since last cycle
 
-# Funding rate filter: Binance perpetual funding rate in % per 8h.
+# Funding rate filter: perpetual funding rate in % per 8h.
 # Positive = longs pay shorts. Extreme positive → crowded trade → suppress new longs.
 # 0.05% per 8h ≈ 54% annualised. Set to 0.5 to effectively disable.
-max_funding_rate_long: 0.05   # skip longs if Binance perp funding > 0.05% per 8h
+funding_sources: ["okx", "binance", "bybit"]  # tried in order; OKX is usually reachable from US IPs
+max_funding_rate_long: 0.05   # skip longs if perp funding > 0.05% per 8h
 max_funding_rate_short: 0.05  # skip shorts if funding < -0.05% per 8h
 
 # Fear & Greed Index (alternative.me): 0=extreme fear, 100=extreme greed.

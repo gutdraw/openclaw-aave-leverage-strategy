@@ -91,6 +91,11 @@ OpenClaw will:
 
 On the first run with `paper_trading: true`, no transactions will be submitted.
 
+Funding rates use the providers listed in `funding_sources`, in order. The default
+is `okx`, then `binance`, then `bybit`, because Binance and Bybit can reject US
+source IPs. Each cycle records the selected provider, attempted providers, and
+bounded provider failures in `trades.jsonl`.
+
 ---
 
 ## Scheduled runs (cron)

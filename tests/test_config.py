@@ -26,6 +26,19 @@ def test_load_preserves_position_ids() -> None:
     config = BotConfig.load(path)
     assert config.position_id == "cbBTC/USDC"
     assert config.short_position_id == "USDC/cbBTC"
+    assert config.funding_sources == ["okx", "binance", "bybit"]
+
+
+def test_load_rejects_unknown_funding_provider() -> None:
+    path = _config_file(funding_sources=["okx", "kraken"])
+    with pytest.raises(ValueError, match="unknown funding providers: kraken"):
+        BotConfig.load(path)
+
+
+def test_load_rejects_duplicate_funding_provider() -> None:
+    path = _config_file(funding_sources=["okx", "okx"])
+    with pytest.raises(ValueError, match="funding_sources must not contain duplicates"):
+        BotConfig.load(path)
 
 
 def test_load_rejects_unknown_keys() -> None:

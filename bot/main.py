@@ -610,6 +610,7 @@ def run_cycle(
         rpc_url=cfg.rpc_url,
         onchain_lookback_blocks=cfg.onchain_lookback_blocks,
         short_borrow_asset=cfg.short_borrow_asset,
+        funding_sources=cfg.funding_sources,
     )
 
     # In paper mode, replace on-chain HF with a simulated value derived from
@@ -654,6 +655,9 @@ def run_cycle(
         "health_factor": data.health_factor,
         "btc_dominance_pct": data.btc_dominance,
         "funding_rate": data.funding_rate,
+        "funding_provider": data.funding_provider,
+        "funding_sources_attempted": list(data.funding_sources_attempted),
+        "funding_failures": list(data.funding_failures),
         "fear_greed": data.fear_greed,
         "volume_24h": data.volume_24h,
         "usdc_utilization": round(data.usdc_utilization, 4)
@@ -742,6 +746,7 @@ def run_cycle(
             "liquidity_escape_velocity": cfg.liquidity_escape_velocity,
             "max_funding_rate_long": cfg.max_funding_rate_long,
             "max_funding_rate_short": cfg.max_funding_rate_short,
+            "funding_sources": list(cfg.funding_sources),
             "max_fear_greed_long": cfg.max_fear_greed_long,
             "min_fear_greed_short": cfg.min_fear_greed_short,
             "fear_greed_short_rsi_floor": cfg.fear_greed_short_rsi_floor,

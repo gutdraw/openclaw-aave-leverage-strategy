@@ -4,7 +4,8 @@ Requires at least 2 to succeed, otherwise raises RuntimeError("insufficient_data
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from math import isfinite
+from typing import Optional, Sequence
 
 import httpx
 
@@ -14,6 +15,8 @@ BINANCE_PREMIUM = "https://fapi.binance.com/fapi/v1/premiumIndex"
 BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
 OKX_FUNDING = "https://www.okx.com/api/v5/public/funding-rate"
 FEAR_GREED_URL = "https://api.alternative.me/fng/"
+FUNDING_PROVIDER_ORDER = ("okx", "binance", "bybit")
+SUPPORTED_FUNDING_PROVIDERS = frozenset(FUNDING_PROVIDER_ORDER)
 
 ASSET_TO_CG_ID: dict[str, str] = {
     "WETH": "ethereum",
@@ -54,6 +57,9 @@ class MarketData:
     funding_rate: Optional[float] = (
         None  # perp funding rate in % per 8h (None = unavailable)
     )
+    funding_provider: Optional[str] = None
+    funding_sources_attempted: tuple[str, ...] = ()
+    funding_failures: tuple[str, ...] = ()
     fear_greed: Optional[int] = (
         None  # Crypto Fear & Greed Index 0-100 (None = unavailable)
     )
@@ -93,6 +99,94 @@ class MarketData:
     wallet_collateral_usd: float = 0.0  # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
 
 
+def _funding_response(provider: str, asset: str, timeout: int):
+    """Fetch one provider's funding response for ``asset``."""
+    if provider == "okx":
+        symbol = ASSET_TO_OKX.get(asset, "BTC-USDT-SWAP")
+        return httpx.get(
+            OKX_FUNDING,
+            params={"instId": symbol},
+            timeout=timeout,
+        )
+    if provider == "binance":
+        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
+        return httpx.get(
+            BINANCE_PREMIUM,
+            params={"symbol": symbol},
+            timeout=timeout,
+        )
+    if provider == "bybit":
+        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
+        return httpx.get(
+            BYBIT_TICKERS,
+            params={"category": "linear", "symbol": symbol},
+            timeout=timeout,
+        )
+    raise ValueError(f"unsupported funding provider: {provider}")
+
+
+def _parse_funding_rate(provider: str, payload: dict) -> float:
+    """Return a provider funding rate as a percentage per 8h."""
+    if provider == "okx":
+        raw_rate = payload["data"][0]["fundingRate"]
+    elif provider == "binance":
+        raw_rate = payload["lastFundingRate"]
+    elif provider == "bybit":
+        raw_rate = payload["result"]["list"][0]["fundingRate"]
+    else:
+        raise ValueError(f"unsupported funding provider: {provider}")
+
+    rate = float(raw_rate) * 100
+    if not isfinite(rate):
+        raise ValueError("funding rate is not finite")
+    return rate
+
+
+def _funding_failure_label(provider: str, error: Exception) -> str:
+    """Return bounded, non-sensitive telemetry for one failed provider."""
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code in (403, 451):
+        return f"{provider}:blocked_http_{status_code}"
+    if status_code is not None:
+        return f"{provider}:http_{status_code}"
+    if isinstance(error, httpx.TimeoutException):
+        return f"{provider}:timeout"
+    if isinstance(error, (KeyError, IndexError, TypeError, ValueError)):
+        return f"{provider}:invalid_response"
+    return f"{provider}:request_error"
+
+
+def _fetch_funding_rate(
+    asset: str,
+    timeout: int,
+    providers: Optional[Sequence[str]] = None,
+) -> tuple[Optional[float], Optional[str], tuple[str, ...], tuple[str, ...]]:
+    """Try funding providers in order and return rate plus bounded telemetry."""
+    provider_order = (
+        tuple(providers) if providers is not None else FUNDING_PROVIDER_ORDER
+    )
+    attempted: list[str] = []
+    failures: list[str] = []
+
+    for configured_provider in provider_order:
+        provider = str(configured_provider).strip().lower()
+        attempted.append(provider)
+        if provider not in SUPPORTED_FUNDING_PROVIDERS:
+            failures.append(f"{provider}:unsupported")
+            continue
+        try:
+            response = _funding_response(provider, asset, timeout)
+            response.raise_for_status()
+            rate = _parse_funding_rate(provider, response.json())
+        except Exception as error:
+            failures.append(_funding_failure_label(provider, error))
+            continue
+        return rate, provider, tuple(attempted), tuple(failures)
+
+    return None, None, tuple(attempted), tuple(failures)
+
+
 def fetch(
     asset: str,
     mcp_client,
@@ -100,6 +194,7 @@ def fetch(
     rpc_url: str = "https://mainnet.base.org",
     onchain_lookback_blocks: int = 10,
     short_borrow_asset: Optional[str] = None,
+    funding_sources: Optional[Sequence[str]] = None,
 ) -> tuple[MarketData, list[str]]:
     """
     Fetch from all 3 sources and return (MarketData, sources_failed).
@@ -181,38 +276,14 @@ def fetch(
     except Exception as e:
         sources_failed.append(f"coingecko_global:{e}")
 
-    # ── Source 4: Funding rate — tries Binance → Bybit → OKX in order ───────
-    # Binance/Bybit block US IPs (451/403); OKX is accessible globally.
-    funding_rate = None
-    _fr_errors: list[str] = []
-    try:
-        symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
-        r = httpx.get(BINANCE_PREMIUM, params={"symbol": symbol}, timeout=timeout)
-        r.raise_for_status()
-        funding_rate = float(r.json()["lastFundingRate"]) * 100
-    except Exception as e:
-        _fr_errors.append(f"binance:{e}")
+    # ── Source 4: Funding rate — prefer the globally reachable provider ────
+    funding_rate, funding_provider, funding_sources_attempted, funding_failures = (
+        _fetch_funding_rate(asset, timeout, funding_sources)
+    )
     if funding_rate is None:
-        try:
-            symbol = ASSET_TO_BINANCE.get(asset, "BTCUSDT")
-            r = httpx.get(
-                BYBIT_TICKERS,
-                params={"category": "linear", "symbol": symbol},
-                timeout=timeout,
-            )
-            r.raise_for_status()
-            funding_rate = float(r.json()["result"]["list"][0]["fundingRate"]) * 100
-        except Exception as e:
-            _fr_errors.append(f"bybit:{e}")
-    if funding_rate is None:
-        try:
-            okx_id = ASSET_TO_OKX.get(asset, "BTC-USDT-SWAP")
-            r = httpx.get(OKX_FUNDING, params={"instId": okx_id}, timeout=timeout)
-            r.raise_for_status()
-            funding_rate = float(r.json()["data"][0]["fundingRate"]) * 100
-        except Exception as e:
-            _fr_errors.append(f"okx:{e}")
-            sources_failed.append(f"funding_rate:{'; '.join(_fr_errors)}")
+        sources_failed.append(
+            "funding_rate:" + "; ".join(funding_failures or ("no_provider",))
+        )
 
     # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
     from bot.onchain import fetch as onchain_fetch
@@ -276,6 +347,9 @@ def fetch(
         onchain_available=oc.available,
         volume_24h=volume_24h,
         funding_rate=funding_rate,
+        funding_provider=funding_provider,
+        funding_sources_attempted=funding_sources_attempted,
+        funding_failures=funding_failures,
         fear_greed=fear_greed,
         usdc_utilization=oc.usdc_utilization,
         asset_utilization=oc.asset_utilization,

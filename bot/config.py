@@ -4,11 +4,12 @@ Reads config.yml and validates required fields.
 """
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 import yaml
 
 PLACEHOLDER_ADDR = "0xYOUR_BOT_WALLET_ADDRESS"
+SUPPORTED_FUNDING_PROVIDERS = frozenset(("okx", "binance", "bybit"))
 
 
 @dataclass
@@ -40,10 +41,14 @@ class BotConfig:
     max_volatility_1h: float = 5.0
     max_borrow_apr: float = 8.0
     btc_dominance_rise_threshold: float = 2.0
-    # Funding rate: Binance perp funding in % per 8h. Positive = longs pay shorts.
+    # Funding rate: perp funding in % per 8h. Positive = longs pay shorts.
     # Extreme positive → crowded longs → suppress new longs (and vice versa for shorts).
     max_funding_rate_long: float = 0.05  # skip longs if funding > 0.05% per 8h
     max_funding_rate_short: float = 0.05  # skip shorts if funding < -0.05% per 8h
+    # Preferred funding providers. OKX is first because Binance/Bybit may block US IPs.
+    funding_sources: list[str] = field(
+        default_factory=lambda: ["okx", "binance", "bybit"]
+    )
     # Fear & Greed Index (0=extreme fear, 100=extreme greed).
     # Extreme greed → suppress longs (over-extended). Extreme fear → suppress shorts.
     max_fear_greed_long: int = 85  # skip longs if F&G >= this
@@ -256,6 +261,21 @@ class BotConfig:
         filtered = {k: v for k, v in raw.items() if k in valid_keys}
         cfg = cls(**filtered)
         cfg._config_path = str(Path(path).resolve())
+
+        if not isinstance(cfg.funding_sources, list) or not cfg.funding_sources:
+            raise ValueError("funding_sources must be a non-empty list")
+        if not all(isinstance(source, str) for source in cfg.funding_sources):
+            raise ValueError("funding_sources must contain provider names")
+        cfg.funding_sources = [source.strip().lower() for source in cfg.funding_sources]
+        unknown_funding_sources = sorted(
+            set(cfg.funding_sources) - SUPPORTED_FUNDING_PROVIDERS
+        )
+        if unknown_funding_sources:
+            raise ValueError(
+                "unknown funding providers: " + ", ".join(unknown_funding_sources)
+            )
+        if len(set(cfg.funding_sources)) != len(cfg.funding_sources):
+            raise ValueError("funding_sources must not contain duplicates")
 
         if cfg.user_address == PLACEHOLDER_ADDR:
             raise ValueError(
