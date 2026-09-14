@@ -170,6 +170,78 @@ class OnChainData:
     risk_fetched_at: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class AccountRiskData:
+    """Direct Aave account-risk probe result."""
+
+    available: bool
+    health_factor: Optional[float] = None
+    total_collateral_usd: Optional[float] = None
+    total_debt_usd: Optional[float] = None
+    block_number: Optional[int] = None
+    fetched_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+def fetch_account_risk(
+    rpc_url: str,
+    user_address: Optional[str],
+    timeout: float = 10,
+) -> AccountRiskData:
+    """Read the Aave account health factor with view calls only.
+
+    This intentionally uses a separate, minimal path from the trading cycle:
+    it creates no signer, does not use MCP, and never broadcasts a transaction.
+    Errors are reduced to exception type names so callers can persist the result
+    without copying RPC URLs or provider response details into runtime files.
+    """
+    fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not user_address or not Web3.is_address(user_address):
+        return AccountRiskData(
+            available=False,
+            fetched_at=fetched_at,
+            error="invalid_user_address",
+        )
+
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": timeout}))
+        pool = w3.eth.contract(
+            address=Web3.to_checksum_address(AAVE_POOL_BASE), abi=_POOL_RISK_ABI
+        )
+        account = pool.functions.getUserAccountData(
+            Web3.to_checksum_address(user_address)
+        ).call()
+        if not isinstance(account, (list, tuple)) or len(account) < 6:
+            raise ValueError("invalid account risk response")
+
+        raw_health_factor = int(account[5])
+        # Aave returns uint256 max when there is no debt. Keep the existing
+        # bot convention of 999 for an effectively unbounded health factor.
+        health_factor = (
+            999.0 if raw_health_factor >= 10**30 else raw_health_factor / 10**18
+        )
+        try:
+            block_number = int(w3.eth.block_number)
+        except Exception:
+            block_number = None
+        return AccountRiskData(
+            available=True,
+            health_factor=health_factor,
+            # Aave's base currency values use 8 decimals and represent USD.
+            total_collateral_usd=float(account[0]) / 10**8,
+            total_debt_usd=float(account[1]) / 10**8,
+            block_number=block_number,
+            fetched_at=fetched_at,
+        )
+    except Exception as error:
+        log.debug("account risk probe error: %s", type(error).__name__)
+        return AccountRiskData(
+            available=False,
+            fetched_at=fetched_at,
+            error=type(error).__name__,
+        )
+
+
 def fetch(
     asset: str,
     rpc_url: str = "https://mainnet.base.org",

@@ -32,6 +32,10 @@ configured reduce/close thresholds. It writes durable active/resolved alert
 state to `trades.alerts.json` and emits transition messages to the systemd
 journal. Any active alert makes the health-check unit non-zero so ordinary
 systemd monitoring can surface it; critical alerts use a distinct exit code.
+With `--config`, the same five-minute health run performs an independent,
+read-only Aave account-risk probe and writes `trades.risk.json` atomically. It
+warns at direct health factor 1.14, escalates at 1.12, and raises critical
+alerts if the probe is unavailable or the snapshot is older than ten minutes.
 The heartbeat also records the selected funding provider and sanitized source
 failure labels. The checker raises warning alerts for
 `funding_rate_unavailable` and `market_data_degraded` when those signals are

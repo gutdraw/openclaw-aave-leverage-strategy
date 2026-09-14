@@ -15,6 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bot.alerts import Alert, reconcile
 from bot.journal import ExecutionJournal
+from bot.risk_probe import (
+    RISK_ESCALATION_HEALTH_FACTOR,
+    RISK_SNAPSHOT_MAX_AGE_SECONDS,
+    RISK_WARNING_HEALTH_FACTOR,
+    load_snapshot,
+    refresh_snapshot,
+)
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +48,86 @@ def _telemetry_strings(value: object, limit: int = 16) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item[:120] for item in value if isinstance(item, str)][:limit]
+
+
+def _default_risk_snapshot_path(heartbeat_path: str) -> str:
+    """Derive ``trades.risk.json`` from the standard heartbeat filename."""
+    path = Path(heartbeat_path)
+    marker = ".heartbeat.json"
+    if path.name.endswith(marker):
+        return str(path.with_name(path.name[: -len(marker)] + ".risk.json"))
+    return str(path.with_suffix(".risk.json"))
+
+
+def _risk_snapshot_alerts(
+    snapshot_path: str,
+    max_age: float = RISK_SNAPSHOT_MAX_AGE_SECONDS,
+) -> list[Alert]:
+    """Return alerts for an independent risk snapshot without trading side effects."""
+    target = Path(snapshot_path)
+    if not target.exists():
+        return [Alert("risk_probe_missing", "critical", "risk snapshot is missing")]
+
+    try:
+        snapshot = load_snapshot(snapshot_path)
+        age = time.time() - target.stat().st_mtime
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return [
+            Alert(
+                "risk_probe_unreadable",
+                "critical",
+                f"risk snapshot unreadable: {type(error).__name__}",
+            )
+        ]
+
+    if age > max_age:
+        return [
+            Alert(
+                "risk_probe_stale",
+                "critical",
+                f"risk snapshot age exceeds {max_age:.0f}s",
+            )
+        ]
+
+    if snapshot.get("status") != "ok" or snapshot.get("available") is not True:
+        error = snapshot.get("error")
+        detail = error[:120] if isinstance(error, str) else "unknown"
+        return [
+            Alert(
+                "risk_probe_unavailable",
+                "critical",
+                f"independent risk probe unavailable: {detail}",
+            )
+        ]
+
+    health_factor = _number(snapshot.get("health_factor"))
+    if health_factor is None:
+        return [
+            Alert(
+                "risk_probe_unavailable",
+                "critical",
+                "independent risk probe returned no numeric health factor",
+            )
+        ]
+    if health_factor <= RISK_ESCALATION_HEALTH_FACTOR:
+        return [
+            Alert(
+                "risk_probe_health_factor_critical",
+                "critical",
+                f"direct health factor {health_factor:.3f} is at or below "
+                f"{RISK_ESCALATION_HEALTH_FACTOR:.3f}",
+            )
+        ]
+    if health_factor <= RISK_WARNING_HEALTH_FACTOR:
+        return [
+            Alert(
+                "risk_probe_health_factor_warning",
+                "warning",
+                f"direct health factor {health_factor:.3f} is at or below "
+                f"{RISK_WARNING_HEALTH_FACTOR:.3f}",
+            )
+        ]
+    return []
 
 
 def _thresholds(
@@ -148,6 +235,8 @@ def collect_health(
     config_path: Optional[str] = None,
     warn_health_factor: Optional[float] = None,
     critical_health_factor: Optional[float] = None,
+    risk_snapshot_path: Optional[str] = None,
+    risk_refresh_error: Optional[str] = None,
 ) -> HealthCheck:
     """Collect all health issues without persisting or logging them."""
     issues: list[Alert] = []
@@ -275,6 +364,17 @@ def collect_health(
                         )
                     )
 
+    if risk_refresh_error:
+        issues.append(
+            Alert(
+                "risk_probe_unavailable",
+                "critical",
+                f"risk probe refresh failed: {risk_refresh_error}",
+            )
+        )
+    elif risk_snapshot_path:
+        issues.extend(_risk_snapshot_alerts(risk_snapshot_path))
+
     journal_file = Path(journal_path)
     if not journal_file.exists():
         issues.append(
@@ -337,12 +437,39 @@ def main() -> int:
     parser.add_argument("--journal", required=True)
     parser.add_argument("--config")
     parser.add_argument(
+        "--risk-snapshot",
+        help="standalone atomic Aave risk snapshot path (derived from heartbeat by default)",
+    )
+    parser.add_argument(
         "--alerts", help="JSON file storing active and last alert state"
     )
     parser.add_argument("--max-age", type=float, default=3900)
     parser.add_argument("--warn-health-factor", type=float)
     parser.add_argument("--critical-health-factor", type=float)
     args = parser.parse_args()
+
+    risk_snapshot_path = args.risk_snapshot
+    risk_refresh_error: Optional[str] = None
+    if args.config:
+        risk_snapshot_path = risk_snapshot_path or _default_risk_snapshot_path(
+            args.heartbeat
+        )
+        try:
+            import yaml
+
+            loaded = yaml.safe_load(Path(args.config).read_text())
+            if not isinstance(loaded, dict):
+                raise ValueError("config must contain a YAML mapping")
+            rpc_url = loaded.get("rpc_url")
+            user_address = loaded.get("user_address")
+            if not isinstance(rpc_url, str) or not rpc_url:
+                raise ValueError("rpc_url is missing")
+            if not isinstance(user_address, str) or not user_address:
+                raise ValueError("user_address is missing")
+            refresh_snapshot(risk_snapshot_path, rpc_url, user_address)
+        except Exception as error:
+            risk_refresh_error = type(error).__name__
+            log.warning("risk probe refresh failed: %s", risk_refresh_error)
 
     result = collect_health(
         args.heartbeat,
@@ -351,6 +478,8 @@ def main() -> int:
         args.config,
         args.warn_health_factor,
         args.critical_health_factor,
+        risk_snapshot_path,
+        risk_refresh_error,
     )
     if args.alerts:
         try:

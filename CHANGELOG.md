@@ -8,6 +8,8 @@
   bounded funding failures, and sanitized market-source failure labels.
 - The health checker raises durable warning alerts for unavailable funding data or
   degraded non-funding market sources without changing trading decisions.
+- The five-minute health run now performs an independent read-only Aave account-risk
+  probe, stores an atomic risk snapshot, and alerts on low, unavailable, or stale HF.
 
 ## [1.9.0] — 2026-06-22
 

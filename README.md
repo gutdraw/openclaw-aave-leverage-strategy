@@ -171,6 +171,7 @@ openclaw-aave-leverage-strategy/
 │   ├── market.py         # Market data fetcher (7 sources)
 │   ├── ohlcv.py          # OHLCV signal engine — 3-TF EMA + RSI + OBV + MACD (Coinbase → Kraken)
 │   ├── onchain.py        # Aave v3 Base on-chain reads (utilization, liquidations)
+│   ├── risk_probe.py     # Independent atomic Aave account-risk snapshots
 │   ├── signal.py         # CoinGecko 3-timeframe signal (last-resort fallback)
 │   ├── filters.py        # 9 no-trade filters
 │   ├── sizing.py         # Position sizing + increase delta
@@ -181,7 +182,7 @@ openclaw-aave-leverage-strategy/
 ├── tests/                # Unit tests
 └── scripts/
     ├── buy_session.py    # Purchase MCP session token
-    └── check_health.py   # Heartbeat/journal/health-factor check
+    └── check_health.py   # Heartbeat/journal/risk snapshot check
 ```
 
 The live loop writes `trades.jsonl` as an audit export and uses a sibling SQLite
@@ -192,6 +193,11 @@ the systemd service and health-check timer templates. The timer records active
 and resolved service, journal, safety-hold, and health-factor alerts in
 `trades.alerts.json` and emits transitions to the systemd journal. A future MCP upgrade can
 add an on-chain router deadline without changing the bot policy.
+
+The health timer also performs an independent read-only Aave account-risk probe
+every five minutes. It writes an atomic `trades.risk.json` snapshot, warns below
+health factor 1.14, escalates at 1.12, and alerts when the snapshot is unavailable
+or older than ten minutes. This probe has no signer and cannot submit trades.
 
 For historical analysis, `bot.backtest.run()` preserves the legacy parameter
 study behavior. `bot.backtest.run_live()` replays the recorded live signal and

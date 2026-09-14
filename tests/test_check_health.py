@@ -159,3 +159,112 @@ def test_collect_health_flags_non_funding_market_source_failure(tmp_path):
             "market data sources failed: coingecko_global, fear_greed",
         )
     ]
+
+
+def test_collect_health_flags_direct_risk_warning(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    risk_snapshot = tmp_path / "risk.json"
+    write(
+        str(heartbeat),
+        {"status": "ok", "paper_trading": True},
+    )
+    write(
+        str(risk_snapshot),
+        {
+            "status": "ok",
+            "available": True,
+            "health_factor": 1.13,
+        },
+    )
+
+    result = collect_health(
+        str(heartbeat),
+        str(journal),
+        max_age=3900,
+        risk_snapshot_path=str(risk_snapshot),
+    )
+
+    assert result.issues == [
+        Alert(
+            "risk_probe_health_factor_warning",
+            "warning",
+            "direct health factor 1.130 is at or below 1.140",
+        )
+    ]
+
+
+def test_collect_health_flags_direct_risk_escalation(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    risk_snapshot = tmp_path / "risk.json"
+    write(str(heartbeat), {"status": "ok", "paper_trading": True})
+    write(
+        str(risk_snapshot),
+        {"status": "ok", "available": True, "health_factor": 1.12},
+    )
+
+    result = collect_health(
+        str(heartbeat),
+        str(journal),
+        max_age=3900,
+        risk_snapshot_path=str(risk_snapshot),
+    )
+
+    assert result.issues == [
+        Alert(
+            "risk_probe_health_factor_critical",
+            "critical",
+            "direct health factor 1.120 is at or below 1.120",
+        )
+    ]
+
+
+def test_collect_health_flags_unavailable_direct_risk_probe(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    risk_snapshot = tmp_path / "risk.json"
+    write(str(heartbeat), {"status": "ok", "paper_trading": True})
+    write(
+        str(risk_snapshot),
+        {"status": "error", "available": False, "error": "Timeout"},
+    )
+
+    result = collect_health(
+        str(heartbeat),
+        str(journal),
+        max_age=3900,
+        risk_snapshot_path=str(risk_snapshot),
+    )
+
+    assert result.issues == [
+        Alert(
+            "risk_probe_unavailable",
+            "critical",
+            "independent risk probe unavailable: Timeout",
+        )
+    ]
+
+
+def test_collect_health_flags_stale_direct_risk_snapshot(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    risk_snapshot = tmp_path / "risk.json"
+    write(str(heartbeat), {"status": "ok", "paper_trading": True})
+    write(
+        str(risk_snapshot),
+        {"status": "ok", "available": True, "health_factor": 1.10},
+    )
+    old = time.time() - 601
+    os.utime(risk_snapshot, (old, old))
+
+    result = collect_health(
+        str(heartbeat),
+        str(journal),
+        max_age=3900,
+        risk_snapshot_path=str(risk_snapshot),
+    )
+
+    assert result.issues == [
+        Alert(
+            "risk_probe_stale",
+            "critical",
+            "risk snapshot age exceeds 600s",
+        )
+    ]
