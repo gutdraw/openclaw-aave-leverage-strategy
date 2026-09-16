@@ -3,8 +3,10 @@ Market data fetcher — pulls from 3 independent sources.
 Requires at least 2 to succeed, otherwise raises RuntimeError("insufficient_data:...").
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from math import isfinite
+import time
 from typing import Optional, Sequence
 
 import httpx
@@ -97,6 +99,24 @@ class MarketData:
     )
     short_borrow_apr: Optional[float] = None  # borrow APR for short_borrow_asset
     wallet_collateral_usd: float = 0.0  # wallet balance in USD (USDC + asset×price) — used when Aave collateral is 0
+    # Local observation metadata. These timestamps identify when this process
+    # completed each read; they are not claims about provider event time.
+    source_observed_at: dict[str, str] = field(default_factory=dict)
+    source_fetch_duration_ms: dict[str, float] = field(default_factory=dict)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _record_source(
+    observed_at: dict[str, str],
+    durations_ms: dict[str, float],
+    source: str,
+    started: float,
+) -> None:
+    observed_at[source] = _now_iso()
+    durations_ms[source] = round(max(time.monotonic() - started, 0.0) * 1000, 1)
 
 
 def _funding_response(provider: str, asset: str, timeout: int):
@@ -192,7 +212,7 @@ def fetch(
     mcp_client,
     timeout: int = 15,
     rpc_url: str = "https://mainnet.base.org",
-    onchain_lookback_blocks: int = 10,
+    onchain_lookback_blocks: int = 150,
     short_borrow_asset: Optional[str] = None,
     funding_sources: Optional[Sequence[str]] = None,
 ) -> tuple[MarketData, list[str]]:
@@ -201,9 +221,12 @@ def fetch(
     Raises RuntimeError if fewer than 2 sources succeed.
     """
     sources_failed: list[str] = []
+    source_observed_at: dict[str, str] = {}
+    source_fetch_duration_ms: dict[str, float] = {}
 
     # ── Source 1: CoinGecko coin prices ───────────────────────────────────
     price = change_1h = change_24h = change_7d = volume_24h = None
+    source_started = time.monotonic()
     try:
         cg_id = ASSET_TO_CG_ID.get(asset, asset.lower())
         r = httpx.get(
@@ -224,6 +247,13 @@ def fetch(
         volume_24h = float(coin.get("total_volume") or 0) or None
     except Exception as e:
         sources_failed.append(f"coingecko_prices:{e}")
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "coingecko_prices",
+            source_started,
+        )
 
     # ── Source 2: get_position (on-chain Aave state) ──────────────────────
     pos: Optional[dict] = None
@@ -231,6 +261,7 @@ def fetch(
     short_asset = short_borrow_asset or asset
     borrow_apr = health_factor = total_collateral_usd = None
     short_borrow_apr = None
+    source_started = time.monotonic()
     try:
         pos = mcp_client.get_position()
         rates = pos.get("reserveRates", {})
@@ -241,6 +272,13 @@ def fetch(
         position_available = isinstance(pos, dict) and isinstance(pos.get("aave"), dict)
     except Exception as e:
         sources_failed.append(f"get_position:{e}")
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "get_position",
+            source_started,
+        )
     if not position_available:
         sources_failed.append("get_position:incomplete_snapshot")
 
@@ -269,44 +307,78 @@ def fetch(
 
     # ── Source 3: CoinGecko global (BTC dominance) ────────────────────────
     btc_dominance = None
+    source_started = time.monotonic()
     try:
         r = httpx.get(COINGECKO_GLOBAL, timeout=timeout)
         r.raise_for_status()
         btc_dominance = float(r.json()["data"]["market_cap_percentage"]["btc"])
     except Exception as e:
         sources_failed.append(f"coingecko_global:{e}")
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "coingecko_global",
+            source_started,
+        )
 
     # ── Source 4: Funding rate — prefer the globally reachable provider ────
-    funding_rate, funding_provider, funding_sources_attempted, funding_failures = (
-        _fetch_funding_rate(asset, timeout, funding_sources)
-    )
-    if funding_rate is None:
-        sources_failed.append(
-            "funding_rate:" + "; ".join(funding_failures or ("no_provider",))
+    source_started = time.monotonic()
+    try:
+        funding_rate, funding_provider, funding_sources_attempted, funding_failures = (
+            _fetch_funding_rate(asset, timeout, funding_sources)
+        )
+        if funding_rate is None:
+            sources_failed.append(
+                "funding_rate:" + "; ".join(funding_failures or ("no_provider",))
+            )
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "funding_rate",
+            source_started,
         )
 
     # ── Source 5: On-chain Aave v3 Base state (soft — failure logged, not blocking) ──
     from bot.onchain import fetch as onchain_fetch
 
-    oc = onchain_fetch(
-        asset,
-        rpc_url,
-        onchain_lookback_blocks,
-        borrow_asset="USDC",
-        short_asset=short_borrow_asset,
-        user_address=getattr(mcp_client, "wallet_address", None),
-    )
+    source_started = time.monotonic()
+    try:
+        oc = onchain_fetch(
+            asset,
+            rpc_url,
+            onchain_lookback_blocks,
+            borrow_asset="USDC",
+            short_asset=short_borrow_asset,
+            user_address=getattr(mcp_client, "wallet_address", None),
+        )
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "onchain",
+            source_started,
+        )
     if not oc.available:
         sources_failed.append("onchain:all_fields_unavailable")
 
     # ── Source 6: Fear & Greed Index (soft — failure logged, not blocking) ────
     fear_greed = None
+    source_started = time.monotonic()
     try:
         r = httpx.get(FEAR_GREED_URL, params={"limit": 1}, timeout=timeout)
         r.raise_for_status()
         fear_greed = int(r.json()["data"][0]["value"])
     except Exception as e:
         sources_failed.append(f"fear_greed:{e}")
+    finally:
+        _record_source(
+            source_observed_at,
+            source_fetch_duration_ms,
+            "fear_greed",
+            source_started,
+        )
 
     # Add asset wallet balance in USD now that we have price — sum both tokens
     # so mixed wallets (e.g. USDC + cbBTC) size correctly. _ensure_wallet_token
@@ -378,4 +450,6 @@ def fetch(
         asset_borrow_apy=asset_borrow_apy,
         short_borrow_apr=short_borrow_apr,
         wallet_collateral_usd=wallet_collateral_usd,
+        source_observed_at=source_observed_at,
+        source_fetch_duration_ms=source_fetch_duration_ms,
     ), sources_failed

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
@@ -128,6 +129,77 @@ def _risk_snapshot_alerts(
             )
         ]
     return []
+
+
+def _source_observation_alerts(heartbeat: dict, max_age: float) -> list[Alert]:
+    """Validate local observation timestamps when the new metadata is present."""
+    raw = heartbeat.get("last_source_observed_at")
+    if raw is None:
+        # Older heartbeat files predate source timestamps; preserve compatibility
+        # until the bot has written its first metadata-bearing heartbeat.
+        return []
+    if not isinstance(raw, dict):
+        return [
+            Alert(
+                "source_observation_unreadable",
+                "warning",
+                "source observation metadata is not an object",
+            )
+        ]
+
+    required = (
+        "coingecko_prices",
+        "get_position",
+        "coingecko_global",
+        "funding_rate",
+        "onchain",
+        "fear_greed",
+    )
+    issues: list[Alert] = []
+    for source in required:
+        value = raw.get(source)
+        if not isinstance(value, str) or not value:
+            issues.append(
+                Alert(
+                    "source_observation_missing",
+                    "warning",
+                    f"source observation missing: {source}",
+                )
+            )
+            continue
+        try:
+            observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - observed).total_seconds()
+        except (TypeError, ValueError):
+            issues.append(
+                Alert(
+                    "source_observation_unreadable",
+                    "warning",
+                    f"source observation timestamp invalid: {source}",
+                )
+            )
+            continue
+        if age > max_age:
+            issues.append(
+                Alert(
+                    "source_observation_stale",
+                    "warning",
+                    f"source observation stale: {source}",
+                )
+            )
+    if heartbeat.get("last_signal_source") == "ohlcv" and not heartbeat.get(
+        "last_tech_observed_at"
+    ):
+        issues.append(
+            Alert(
+                "technical_observation_missing",
+                "warning",
+                "active OHLCV signal has no local observation timestamp",
+            )
+        )
+    return issues
 
 
 def _thresholds(
@@ -313,6 +385,8 @@ def collect_health(
                             + ", ".join(non_funding_failures),
                         )
                     )
+
+                issues.extend(_source_observation_alerts(heartbeat, max_age))
 
                 funding_provider = heartbeat.get("last_funding_provider")
                 if "last_funding_provider" in heartbeat and not (

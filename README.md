@@ -167,6 +167,8 @@ openclaw-aave-leverage-strategy/
 │   ├── main.py           # Entry point — per-cycle execution loop
 │   ├── journal.py        # SQLite transaction journal and crash recovery state
 │   ├── heartbeat.py      # Atomic supervisor heartbeat writer
+│   ├── provenance.py     # Process, code, and config identity metadata
+│   ├── audit.py          # Read-only execution/accounting audit helpers
 │   ├── config.py         # Config dataclass
 │   ├── market.py         # Market data fetcher (7 sources)
 │   ├── ohlcv.py          # OHLCV signal engine — 3-TF EMA + RSI + OBV + MACD (Coinbase → Kraken)
@@ -182,6 +184,7 @@ openclaw-aave-leverage-strategy/
 ├── tests/                # Unit tests
 └── scripts/
     ├── buy_session.py    # Purchase MCP session token
+    ├── audit_history.py  # Offline/RPC-enriched read-only audit report
     └── check_health.py   # Heartbeat/journal/risk snapshot check
 ```
 
@@ -203,6 +206,24 @@ For historical analysis, `bot.backtest.run()` preserves the legacy parameter
 study behavior. `bot.backtest.run_live()` replays the recorded live signal and
 shared filter pipeline, and reports incomplete snapshots instead of treating
 missing live inputs as equivalent to a clean backtest.
+
+For an evidence-first operational audit, run:
+
+```bash
+python scripts/audit_history.py --trades trades.jsonl --journal trades.sqlite3
+```
+
+The default report is offline and read-only. It classifies every recorded cycle,
+joins trade events to the SQLite execution journal where possible, checks the
+modelled P&L formula, and reports missing evidence. Add `--config my-config.yml`
+to perform optional read-only Base-RPC receipt and ERC-20 transfer enrichment;
+the audit never creates a signer, renews an MCP session, or broadcasts a
+transaction. `reconciled_realised_usd` intentionally remains null until actual
+fills, gas, interest, fees, and wallet flows are evidenced.
+
+`bot.backtest.walk_forward()` provides fixed-parameter rolling out-of-sample
+windows with the explicit fee, gas, and borrow-cost assumptions from
+`BacktestParams`. Those costs are estimates and must not be read as wallet P&L.
 
 ---
 

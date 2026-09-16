@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added — Auditable cycle and execution provenance
+
+- Every new cycle records a stable decision category, position state before the
+  cycle, selected signal source, source-conflict flag, local source observation
+  timestamps/durations, and process/code/config provenance.
+- The SQLite execution journal now preserves every broadcast step and its
+  receipt instead of retaining only the final transaction. Live trade and
+  auxiliary swap records carry structural execution IDs where available.
+- Mined transaction reverts are recorded as terminal `reverted` journal states
+  with their receipt, avoiding an indefinite recovery hold after a confirmed
+  revert.
+- `scripts/audit_history.py` provides a read-only offline audit and optional
+  allowlisted Base-RPC enrichment for receipts, gas, and ERC-20 transfer flows.
+  Synthetic `realised_usd` remains separate from reconciled wallet P&L.
+- `bot.backtest.walk_forward()` provides fixed-parameter rolling out-of-sample
+  windows with explicit estimated cost assumptions.
+- Aave liquidation monitoring defaults to an approximately five-minute window,
+  chunked into ten-block RPC requests for strict public/free provider limits.
+
 ### Added — Market-source health telemetry
 
 - Successful cycle heartbeats now record the funding provider, attempted providers,

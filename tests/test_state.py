@@ -1,8 +1,10 @@
+import json
 import tempfile
 from pathlib import Path
 
 from bot.state import (
     append_entry,
+    classify_cycle_decision,
     get_last_btc_dominance,
     get_open_trade,
     load_entries,
@@ -81,3 +83,29 @@ def test_get_last_btc_dominance():
 
 def test_get_last_btc_dominance_missing():
     assert get_last_btc_dominance([{"type": "cycle"}]) is None
+
+
+def test_classify_cycle_decision_distinguishes_holds_and_safety_gates() -> None:
+    assert classify_cycle_decision("hold", "flat", "hold") == "flat_signal_hold"
+    assert classify_cycle_decision("hold", "open", "hold") == "position_management_hold"
+    assert classify_cycle_decision("skip_volatility", "flat", "hold") == "strategy_gate"
+    assert (
+        classify_cycle_decision("skip_execution_recovery", "unknown", None)
+        == "execution_recovery"
+    )
+
+
+def test_append_entry_persists_decision_category(tmp_path) -> None:
+    path = tmp_path / "trades.jsonl"
+    append_entry(
+        str(path),
+        {
+            "type": "cycle",
+            "signal": "hold",
+            "position_state_before": "flat",
+            "decision": "hold",
+        },
+    )
+
+    record = json.loads(path.read_text())
+    assert record["decision_category"] == "flat_signal_hold"

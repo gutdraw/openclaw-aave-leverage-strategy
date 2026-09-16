@@ -134,9 +134,11 @@ _POOL_RISK_ABI = [
 ]
 
 # Default lookback for eth_getLogs.
-# Alchemy free tier: max 10 blocks. PAYG: up to 2000.
-# Base produces ~1 block/2s → 10 blocks ≈ 20 seconds, 150 blocks ≈ 5 minutes.
-_LOOKBACK_BLOCKS_DEFAULT = 10
+# Base produces ~1 block/2s, so 150 blocks is approximately five minutes.
+# Requests are deliberately chunked to ten blocks for compatibility with strict
+# public/free RPC range limits.
+_LOOKBACK_BLOCKS_DEFAULT = 150
+_LOG_REQUEST_CHUNK_BLOCKS = 10
 
 
 @dataclass
@@ -501,29 +503,41 @@ def _recent_liquidations(w3: Web3, lookback: int) -> Optional[int]:
             timeout=10,
         ).json()["result"]
         latest_int = int(latest_hex, 16)
-        from_hex = hex(latest_int - (lookback - 1))
-
-        resp = httpx.post(
-            rpc_url,
-            json={
-                "jsonrpc": "2.0",
-                "method": "eth_getLogs",
-                "params": [
-                    {
-                        "address": Web3.to_checksum_address(AAVE_POOL_BASE),
-                        "fromBlock": from_hex,
-                        "toBlock": latest_hex,
-                        "topics": [topic],
-                    }
-                ],
-                "id": 2,
-            },
-            timeout=10,
-        ).json()
-        if "error" in resp:
-            log.debug("liquidation log RPC error: %s", resp["error"])
-            return None
-        return len(resp.get("result", []))
+        window = max(int(lookback), 1)
+        first_block = max(latest_int - (window - 1), 0)
+        total = 0
+        request_id = 2
+        for from_block in range(first_block, latest_int + 1, _LOG_REQUEST_CHUNK_BLOCKS):
+            to_block = min(
+                from_block + _LOG_REQUEST_CHUNK_BLOCKS - 1,
+                latest_int,
+            )
+            resp = httpx.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "eth_getLogs",
+                    "params": [
+                        {
+                            "address": Web3.to_checksum_address(AAVE_POOL_BASE),
+                            "fromBlock": hex(from_block),
+                            "toBlock": hex(to_block),
+                            "topics": [topic],
+                        }
+                    ],
+                    "id": request_id,
+                },
+                timeout=10,
+            ).json()
+            request_id += 1
+            if "error" in resp:
+                log.debug("liquidation log RPC error: %s", resp["error"])
+                return None
+            logs = resp.get("result")
+            if not isinstance(logs, list):
+                return None
+            total += len(logs)
+        return total
     except Exception as e:
         log.debug("liquidation log error: %s", e)
         return None

@@ -117,6 +117,58 @@ def get_open_trade(entries: list[dict]) -> Optional[dict]:
     return open_trade
 
 
+def classify_cycle_decision(
+    decision: object,
+    position_state_before: object = None,
+    signal: object = None,
+) -> str:
+    """Map a cycle decision to an audit-friendly, stable category.
+
+    The raw decision remains the authoritative detail. This category makes a
+    long run of ``hold`` cycles explainable without changing strategy behavior.
+    Unknown values are deliberately retained as ``unclassified`` so audits do
+    not silently turn an unrecognized decision into a reassuring label.
+    """
+    value = str(decision).strip() if decision is not None else ""
+    if not value:
+        return "unrecorded_decision"
+    if value == "hold":
+        if position_state_before == "open":
+            return "position_management_hold"
+        if position_state_before == "flat" and (signal == "hold" or signal is None):
+            return "flat_signal_hold"
+        return "unclassified_hold"
+    if value == "skip_execution_recovery":
+        return "execution_recovery"
+    if value in {
+        "skip_safety_data_unavailable",
+        "skip_state_reconciliation",
+        "skip_risk_config_unavailable",
+    }:
+        return "safety_gate"
+    if value == "skip_insufficient_funds":
+        return "wallet_funding_gate"
+    if value in {"skip_min_hf", "hf_reduce"}:
+        return "risk_gate"
+    if value == "hf_close" or value.startswith("liquidity_escape"):
+        return "risk_exit"
+    if value in {
+        "take_profit",
+        "stop_loss",
+        "trailing_stop",
+        "signal_reversal",
+        "max_hold_days",
+    }:
+        return "position_exit"
+    if value.startswith("open_"):
+        return "position_open"
+    if value.startswith("increase_"):
+        return "position_increase"
+    if value.startswith("skip_"):
+        return "strategy_gate"
+    return "unclassified"
+
+
 def get_effective_size(
     open_trade: Optional[dict], entries: list[dict]
 ) -> tuple[float, float, float]:
@@ -255,6 +307,15 @@ def get_position_peak(entries: list[dict]) -> float:
 def append_entry(path: str, entry: dict) -> None:
     """Append a single JSON entry as a new line. Uses an exclusive file lock to prevent
     concurrent writes from corrupting the log."""
+    if entry.get("type") == "cycle":
+        entry.setdefault(
+            "decision_category",
+            classify_cycle_decision(
+                entry.get("decision"),
+                entry.get("position_state_before"),
+                entry.get("signal"),
+            ),
+        )
     with open(path, "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:

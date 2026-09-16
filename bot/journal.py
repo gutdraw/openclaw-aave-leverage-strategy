@@ -62,6 +62,7 @@ class ExecutionJournal:
                     nonce INTEGER,
                     last_step INTEGER,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
                     receipt_json TEXT,
                     state_event_json TEXT,
                     error TEXT
@@ -70,6 +71,14 @@ class ExecutionJournal:
                     ON executions(status, state_event_json);
                 """
             )
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(executions)").fetchall()
+            }
+            if "steps_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE executions ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]'"
+                )
 
     def prepare(
         self,
@@ -107,13 +116,61 @@ class ExecutionJournal:
         step_index: int,
         nonce: Optional[int] = None,
     ) -> None:
-        self._update(
-            execution_id,
-            status="broadcast",
-            tx_hash=tx_hash,
-            last_step=step_index,
-            nonce=nonce,
-        )
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT steps_json FROM executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            steps = self._decode_steps(row["steps_json"] if row else None)
+            steps.append(
+                {
+                    "step_index": step_index,
+                    "tx_hash": tx_hash,
+                    "nonce": nonce,
+                    "broadcast_at": _now(),
+                }
+            )
+            conn.execute(
+                """
+                UPDATE executions
+                   SET status = ?, tx_hash = ?, last_step = ?, nonce = ?,
+                       steps_json = ?, updated_at = ?
+                 WHERE execution_id = ?
+                """,
+                (
+                    "broadcast",
+                    tx_hash,
+                    step_index,
+                    nonce,
+                    json.dumps(steps, sort_keys=True, default=str),
+                    _now(),
+                    execution_id,
+                ),
+            )
+
+    def mark_step_confirmed(
+        self, execution_id: str, tx_hash: str, receipt: dict
+    ) -> None:
+        """Attach one transaction receipt without closing the execution."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT steps_json FROM executions WHERE execution_id = ?",
+                (execution_id,),
+            ).fetchone()
+            steps = self._decode_steps(row["steps_json"] if row else None)
+            for step in reversed(steps):
+                if step.get("tx_hash") == tx_hash:
+                    step["confirmed_at"] = _now()
+                    step["receipt"] = receipt
+                    break
+            conn.execute(
+                "UPDATE executions SET steps_json = ?, updated_at = ? WHERE execution_id = ?",
+                (
+                    json.dumps(steps, sort_keys=True, default=str),
+                    _now(),
+                    execution_id,
+                ),
+            )
 
     def mark_confirmed(
         self,
@@ -121,6 +178,8 @@ class ExecutionJournal:
         tx_hash: Optional[str] = None,
         receipt: Optional[dict] = None,
     ) -> None:
+        if tx_hash and receipt is not None:
+            self.mark_step_confirmed(execution_id, tx_hash, receipt)
         self._update(
             execution_id,
             status="confirmed",
@@ -146,6 +205,24 @@ class ExecutionJournal:
                 """,
                 (status, _now(), error[:2000], execution_id),
             )
+
+    def mark_reverted(
+        self,
+        execution_id: str,
+        error: str = "transaction reverted",
+        receipt: Optional[dict] = None,
+    ) -> None:
+        """Record a mined revert as terminal, while retaining its receipt."""
+        self._update(
+            execution_id,
+            status="reverted",
+            receipt_json=(
+                json.dumps(receipt, default=str, sort_keys=True)
+                if receipt is not None
+                else None
+            ),
+            error=error[:2000],
+        )
 
     def mark_state_recorded(
         self, execution_id: str, event: Optional[dict] = None
@@ -192,7 +269,7 @@ class ExecutionJournal:
             rows = conn.execute(
                 """
                 SELECT * FROM executions
-                 WHERE status IN ('failed', 'unknown')
+                 WHERE status IN ('failed', 'unknown', 'reverted')
                  ORDER BY updated_at DESC
                  LIMIT ?
                 """,
@@ -200,10 +277,35 @@ class ExecutionJournal:
             ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def all(self) -> list[dict]:
+        """Return all journal rows in creation order for read-only audits."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM executions ORDER BY created_at, execution_id"
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    @staticmethod
+    def _decode_steps(raw: object) -> list[dict]:
+        if not raw:
+            return []
+        try:
+            decoded = json.loads(str(raw))
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(decoded, list):
+            return []
+        return [step for step in decoded if isinstance(step, dict)]
+
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
         result = dict(row)
-        for key in ("metadata_json", "receipt_json", "state_event_json"):
+        for key in (
+            "metadata_json",
+            "steps_json",
+            "receipt_json",
+            "state_event_json",
+        ):
             raw = result.pop(key, None)
             if raw:
                 try:

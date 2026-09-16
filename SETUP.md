@@ -105,14 +105,17 @@ export PRIVATE_KEY=0xYOUR_PRIVATE_KEY
 python -m bot.main --config my-config.yml --loop 3600
 ```
 
-For better on-chain data (longer liquidation lookback), use an Alchemy Base RPC in `config.yml`:
+The on-chain reader uses a five-minute liquidation window by default and splits
+it into ten-block requests so it also works with strict public/free RPC limits.
+For lower latency and higher reliability, use a paid Alchemy Base RPC in `config.yml`:
 
 ```yaml
 rpc_url: "https://base-mainnet.g.alchemy.com/v2/YOUR_ALCHEMY_KEY"
-onchain_lookback_blocks: 150   # ~5 minutes of liquidation history (PAYG tier)
+onchain_lookback_blocks: 150   # ~5 minutes of liquidation history
 ```
 
-Free Alchemy tier is limited to 10 blocks per `eth_getLogs` call. PAYG unlocks up to 2000.
+The bot remains within ten blocks per `eth_getLogs` request; a larger window means
+more read calls and therefore more latency.
 
 Or with Docker:
 
@@ -217,8 +220,8 @@ For minimal resource use, run one cycle per hour via cron:
 
 | Field | Default | Description |
 |---|---|---|
-| `rpc_url` | `"https://mainnet.base.org"` | Base RPC for on-chain reads. Use Alchemy for longer lookback. |
-| `onchain_lookback_blocks` | `10` | Lookback for liquidation event scan. Alchemy free tier: max 10 blocks (~20s). |
+| `rpc_url` | `"https://mainnet.base.org"` | Base RPC for on-chain reads. Use Alchemy for lower latency and higher reliability. |
+| `onchain_lookback_blocks` | `150` | Lookback for liquidation event scan; requests are chunked to ten blocks (~5 minutes on Base). |
 
 ### Risk guardrails
 

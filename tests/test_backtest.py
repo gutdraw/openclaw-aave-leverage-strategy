@@ -1,7 +1,7 @@
 import json
 import tempfile
 
-from bot.backtest import BacktestParams, compare, run, run_live
+from bot.backtest import BacktestParams, compare, run, run_live, walk_forward
 
 
 def _write_log(entries: list[dict]) -> str:
@@ -195,6 +195,31 @@ def test_live_replay_reports_incomplete_snapshots() -> None:
 
     assert result.simulated_trades == 0
     assert result.incomplete_snapshot_cycles == 1
+
+
+def test_walk_forward_reports_cost_aware_out_of_sample_windows() -> None:
+    path = _write_log(STRONG_LONG_TP + LONG_SL)
+    with open(path, "rb") as source:
+        before = source.read()
+
+    result = walk_forward(
+        BacktestParams(
+            take_profit_pct=5.0,
+            stop_loss_pct=3.0,
+            round_trip_fee_bps=10.0,
+            gas_usd_per_trade=2.0,
+        ),
+        path,
+        test_cycles=3,
+        faithful=False,
+    )
+
+    assert result["method"] == "fixed_parameter_walk_forward"
+    assert result["cost_model_is_estimate"] is True
+    assert result["aggregate"]["windows"] == 2
+    assert result["aggregate"]["total_cost_usd"] > 0
+    with open(path, "rb") as source:
+        assert source.read() == before
 
 
 def test_live_replay_uses_recorded_reversal_and_logged_time() -> None:

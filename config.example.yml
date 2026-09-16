@@ -153,6 +153,10 @@ min_volume_24h_usd: 0
 # ---------------------------------------------------------------
 rpc_url: "https://mainnet.base.org"  # free public Base RPC; use paid RPC in live mode
 
+# The reader chunks this window into 10-block RPC requests for compatibility
+# with strict public/free provider limits. Base is about 2 seconds per block.
+onchain_lookback_blocks: 150       # approximately the last five minutes
+
 # USDC pool utilization: Aave's interest rate curve has a kink at ~90%.
 # Above the kink, variable borrow APR climbs steeply and non-linearly.
 # Suppress new entries when we're already deep in high-rate territory.

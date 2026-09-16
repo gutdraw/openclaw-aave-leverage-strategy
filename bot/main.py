@@ -42,6 +42,7 @@ from bot.config import BotConfig
 from bot.journal import ExecutionJournal
 from bot.mcp_client import MCPClient
 from bot.onchain import canonical_asset
+from bot.provenance import build_runtime_provenance
 from bot.swaps import inject_swap_approve
 
 log = logging.getLogger(__name__)
@@ -70,13 +71,24 @@ def _heartbeat_source_labels(value: object) -> list[str]:
 
 
 def _cycle_heartbeat_payload(
-    result: dict, cfg: BotConfig, journal: ExecutionJournal
+    result: dict,
+    cfg: BotConfig,
+    journal: ExecutionJournal,
+    provenance: Optional[dict[str, object]] = None,
 ) -> dict:
     """Build the successful-cycle heartbeat payload without raw error details."""
-    return {
+    decision_category = result.get(
+        "decision_category"
+    ) or state.classify_cycle_decision(
+        result.get("decision"),
+        result.get("position_state_before"),
+        result.get("signal"),
+    )
+    payload = {
         "status": "ok",
         "updated_at": state.now_iso(),
         "last_decision": result.get("decision"),
+        "last_decision_category": decision_category,
         "last_price": result.get("price"),
         "last_health_factor": result.get("health_factor"),
         "last_funding_rate": result.get("funding_rate"),
@@ -86,10 +98,23 @@ def _cycle_heartbeat_payload(
         ),
         "last_funding_failures": _heartbeat_strings(result.get("funding_failures")),
         "last_sources_failed": _heartbeat_source_labels(result.get("sources_failed")),
+        "last_signal_source": result.get("signal_source"),
+        "last_signal_conflict": result.get("signal_conflict"),
+        "last_tech_observed_at": result.get("tech_observed_at"),
         "unresolved_execution_count": len(journal.recoverable()),
         "asset": cfg.asset,
         "paper_trading": cfg.paper_trading,
+        "provenance": provenance
+        if provenance is not None
+        else build_runtime_provenance(cfg._config_path),
     }
+    observed_at = result.get("source_observed_at")
+    if isinstance(observed_at, dict):
+        payload["last_source_observed_at"] = observed_at
+    durations = result.get("source_fetch_duration_ms")
+    if isinstance(durations, dict):
+        payload["last_source_fetch_duration_ms"] = durations
+    return payload
 
 
 def _paper_health_factor(
@@ -367,7 +392,9 @@ def _refresh_journal_receipts(
         try:
             receipt = signer.w3.eth.get_transaction_receipt(tx_hash)
             if receipt.get("status") == 0:
-                journal.mark_failed(record["execution_id"], "transaction reverted")
+                journal.mark_reverted(
+                    record["execution_id"], "transaction reverted", dict(receipt)
+                )
             else:
                 journal.mark_confirmed(record["execution_id"], tx_hash, dict(receipt))
         except Exception:
@@ -442,6 +469,16 @@ def _ensure_wallet_token(
             {"token_in": tok, "token_out": "USDC", "amount_in": qty},
         )
         cycle_entry["pre_swap"] = f"{qty:.6f} {tok} → USDC (tx={swap_hash})"
+        cycle_entry["pre_swap_execution_id"] = execution_id
+        cycle_entry.setdefault("pre_swaps", []).append(
+            {
+                "token_in": tok,
+                "token_out": "USDC",
+                "amount_in": qty,
+                "tx_hash": swap_hash,
+                "execution_id": execution_id,
+            }
+        )
         log.info("waiting for swap confirmation: %s", swap_hash)
         signer.wait_for_receipt(swap_hash)
         if journal is not None and execution_id is not None:
@@ -553,6 +590,16 @@ def _ensure_wallet_token(
             cycle_entry["pre_swap"] = (
                 f"{swap_usd:.2f} USDC → {cfg.asset} (tx={swap_hash})"
             )
+            cycle_entry["pre_swap_execution_id"] = execution_id
+            cycle_entry.setdefault("pre_swaps", []).append(
+                {
+                    "token_in": "USDC",
+                    "token_out": cfg.asset,
+                    "amount_in": swap_usd,
+                    "tx_hash": swap_hash,
+                    "execution_id": execution_id,
+                }
+            )
             log.info("waiting for swap confirmation: %s", swap_hash)
             signer.wait_for_receipt(swap_hash)
             if journal is not None and execution_id is not None:
@@ -594,8 +641,14 @@ def run_cycle(
     signer=None,
     mcp: MCPClient = None,
     journal: Optional[ExecutionJournal] = None,
+    provenance: Optional[dict[str, object]] = None,
 ) -> dict:
     """Run one full strategy cycle. Returns the cycle log entry."""
+    cycle_provenance = (
+        provenance
+        if provenance is not None
+        else build_runtime_provenance(cfg._config_path)
+    )
     if mcp is None:
         mcp = MCPClient(
             base_url=cfg.mcp_url,
@@ -617,6 +670,8 @@ def run_cycle(
             "ts": state.now_iso(),
             "asset": cfg.asset,
             "decision": "skip_execution_recovery",
+            "position_state_before": "unknown",
+            "provenance": cycle_provenance,
             "unresolved_executions": [
                 {
                     "execution_id": record.get("execution_id"),
@@ -676,13 +731,17 @@ def run_cycle(
 
     if tech_sig is not None:
         sig = tech_sig  # OHLCV available — use it exclusively
+        signal_source = "ohlcv"
     else:
         sig = cg_sig  # all OHLCV sources failed — fall back to CoinGecko
+        signal_source = "coingecko"
 
     cycle_entry: dict = {
         "type": "cycle",
         "ts": state.now_iso(),
         "asset": cfg.asset,
+        "position_state_before": "open" if open_trade is not None else "flat",
+        "provenance": cycle_provenance,
         "price": data.price,
         "change_1h": data.change_1h,
         "change_24h": data.change_24h,
@@ -743,6 +802,19 @@ def run_cycle(
         "paper_trading": cfg.paper_trading,
         "cg_signal": cg_sig.label,
         "tech_signal": tech_sig.label if tech_sig is not None else None,
+        "signal_source": signal_source,
+        "signal_conflict": bool(
+            tech_sig is not None and tech_sig.label != cg_sig.label
+        ),
+        "tech_observed_at": tech.observed_at if tech is not None else None,
+        "tech_fetch_duration_ms": (
+            tech.fetch_duration_ms if tech is not None else None
+        ),
+        "tech_timeframes_available": (
+            list(tech.timeframes_available) if tech is not None else []
+        ),
+        "source_observed_at": dict(data.source_observed_at),
+        "source_fetch_duration_ms": dict(data.source_fetch_duration_ms),
         "tech_ema_bull": tech.ema_bull if tech is not None else None,
         "tech_rsi": tech.rsi if tech is not None else None,
         "tech_source": tech.source if tech is not None else None,
@@ -941,6 +1013,7 @@ def run_cycle(
                 "price": data.price,
                 "paper": cfg.paper_trading,
                 "tx_hash": res.tx_hash,
+                "execution_id": res.execution_id,
             }
             if not cfg.paper_trading:
                 try:
@@ -1256,6 +1329,7 @@ def run_cycle(
                     "add_seed_usd": round(delta.seed_usd, 2),
                     "paper": cfg.paper_trading,
                     "tx_hash": res.tx_hash,
+                    "execution_id": res.execution_id,
                 }
                 cycle_entry["decision"] = f"increase_{open_direction}"
                 state.append_entry(cfg.trades_file, cycle_entry)
@@ -1625,6 +1699,7 @@ def run_cycle(
             "leverage": cfg.leverage_for(sig.direction),
             "paper": cfg.paper_trading,
             "tx_hash": res.tx_hash,
+            "execution_id": res.execution_id,
         }
         cycle_entry["decision"] = f"open_{sig.direction}"
         state.append_entry(cfg.trades_file, cycle_entry)
@@ -1674,9 +1749,12 @@ def _close_trade_entry(
         "reason": reason,
         "paper": cfg.paper_trading,
         "tx_hash": res.tx_hash,
+        "execution_id": res.execution_id,
     }
     if isinstance(res.raw, dict) and res.raw.get("post_close_swap_error"):
         entry["post_close_swap_error"] = res.raw["post_close_swap_error"]
+    if isinstance(res.raw, dict) and res.raw.get("post_close_swap_execution_id"):
+        entry["post_close_swap_execution_id"] = res.raw["post_close_swap_execution_id"]
     return entry
 
 
@@ -1706,6 +1784,7 @@ def main() -> None:
     raw_cfg = yaml.safe_load(open(args.config).read())
     _instance_lock = state.acquire_process_lock(cfg.trades_file)
     journal = ExecutionJournal(cfg.runtime_journal_file())
+    provenance = build_runtime_provenance(cfg._config_path)
 
     mode = "PAPER" if cfg.paper_trading else "LIVE"
     log.info(
@@ -1722,6 +1801,7 @@ def main() -> None:
             "asset": cfg.asset,
             "paper_trading": cfg.paper_trading,
             "unresolved_execution_count": len(journal.recoverable()),
+            "provenance": provenance,
         },
     )
 
@@ -1743,7 +1823,7 @@ def main() -> None:
     if args.loop > 0:
         while True:
             try:
-                result = run_cycle(cfg, raw_cfg, signer, mcp, journal)
+                result = run_cycle(cfg, raw_cfg, signer, mcp, journal, provenance)
                 log.info(
                     "Cycle done — decision=%s direction=%s price=%.2f",
                     result.get("decision"),
@@ -1752,7 +1832,7 @@ def main() -> None:
                 )
                 heartbeat.write(
                     cfg.runtime_heartbeat_file(),
-                    _cycle_heartbeat_payload(result, cfg, journal),
+                    _cycle_heartbeat_payload(result, cfg, journal, provenance),
                 )
             except Exception as e:
                 log.error("Cycle error: %s", e, exc_info=True)
@@ -1767,13 +1847,14 @@ def main() -> None:
                         "unresolved_execution_count": len(journal.recoverable()),
                         "asset": cfg.asset,
                         "paper_trading": cfg.paper_trading,
+                        "provenance": provenance,
                     },
                 )
             log.info("Sleeping %ds…", args.loop)
             time.sleep(args.loop)
     else:
         try:
-            result = run_cycle(cfg, raw_cfg, signer, mcp, journal)
+            result = run_cycle(cfg, raw_cfg, signer, mcp, journal, provenance)
             log.info(
                 "Cycle done — decision=%s direction=%s price=%.2f",
                 result.get("decision"),
@@ -1782,7 +1863,7 @@ def main() -> None:
             )
             heartbeat.write(
                 cfg.runtime_heartbeat_file(),
-                _cycle_heartbeat_payload(result, cfg, journal),
+                _cycle_heartbeat_payload(result, cfg, journal, provenance),
             )
         except Exception as e:
             log.error("Cycle error: %s", e, exc_info=True)
@@ -1795,6 +1876,7 @@ def main() -> None:
                     "unresolved_execution_count": len(journal.recoverable()),
                     "asset": cfg.asset,
                     "paper_trading": cfg.paper_trading,
+                    "provenance": provenance,
                 },
             )
             sys.exit(1)

@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timezone
 
 from bot.alerts import Alert
 from bot.heartbeat import write
@@ -159,6 +160,55 @@ def test_collect_health_flags_non_funding_market_source_failure(tmp_path):
             "market data sources failed: coingecko_global, fear_greed",
         )
     ]
+
+
+def test_collect_health_accepts_fresh_source_observation_metadata(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    observed = (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    write(
+        str(heartbeat),
+        {
+            "status": "ok",
+            "paper_trading": True,
+            "last_source_observed_at": {
+                source: observed
+                for source in (
+                    "coingecko_prices",
+                    "get_position",
+                    "coingecko_global",
+                    "funding_rate",
+                    "onchain",
+                    "fear_greed",
+                )
+            },
+            "last_signal_source": "coingecko",
+        },
+    )
+
+    result = collect_health(str(heartbeat), str(journal), max_age=3900)
+
+    assert result.issues == []
+
+
+def test_collect_health_flags_stale_source_observation(tmp_path):
+    heartbeat, journal = _paths(tmp_path)
+    write(
+        str(heartbeat),
+        {
+            "status": "ok",
+            "paper_trading": True,
+            "last_source_observed_at": {"coingecko_prices": "2020-01-01T00:00:00Z"},
+        },
+    )
+
+    result = collect_health(str(heartbeat), str(journal), max_age=10)
+
+    assert {issue.key for issue in result.issues} == {
+        "source_observation_missing",
+        "source_observation_stale",
+    }
 
 
 def test_collect_health_flags_direct_risk_warning(tmp_path):

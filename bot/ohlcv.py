@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import time
 from typing import Optional
 
 import httpx
@@ -86,6 +88,15 @@ class TechSignal:
         None  # Average Directional Index on 1h; <20=ranging, >25=trending
     )
     volume_ratio: Optional[float] = None  # latest 1h volume / 20-bar avg; >3 = spike
+    # Local observation metadata. This is when this process completed the
+    # candle reads, not the timestamp of the exchange's latest candle.
+    observed_at: Optional[str] = None
+    fetch_duration_ms: Optional[float] = None
+    timeframes_available: tuple[str, ...] = ()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
@@ -95,6 +106,8 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
 
     Falls back to 1h-only scoring if higher timeframes are unavailable.
     """
+    started = time.monotonic()
+
     # ── 1h (required) ────────────────────────────────────────────────────
     closes_1h, vols_1h, highs_1h, lows_1h, source = _fetch_tf(asset, 3600, 60, timeout)
     if closes_1h is None or len(closes_1h) < _MIN_CANDLES:
@@ -159,6 +172,17 @@ def fetch_multi(asset: str, timeout: int = 15) -> Optional[TechSignal]:
         macd_bull=macd_b,
         adx=round(adx_v, 1) if adx_v is not None else None,
         volume_ratio=round(vol_ratio, 2) if vol_ratio is not None else None,
+        observed_at=_now_iso(),
+        fetch_duration_ms=round(max(time.monotonic() - started, 0.0) * 1000, 1),
+        timeframes_available=tuple(
+            timeframe
+            for timeframe, closes in (
+                ("1h", closes_1h),
+                ("mid", closes_mid),
+                ("1d", closes_1d),
+            )
+            if closes and len(closes) >= EMA_SLOW + 5
+        ),
     )
 
 

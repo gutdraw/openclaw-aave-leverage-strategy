@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+import json
+from pathlib import Path
+import tempfile
 from typing import Optional
 
 import bot.filters as filters_mod
@@ -646,6 +649,100 @@ def run_live(
         require_complete_snapshots=require_complete_snapshots,
     )
     return run(replay_params, trades_file, seed_usd, faithful=True)
+
+
+def walk_forward(
+    params: BacktestParams,
+    trades_file: str = "trades.jsonl",
+    *,
+    warmup_cycles: int = 0,
+    test_cycles: int = 336,
+    step_cycles: Optional[int] = None,
+    seed_usd: Optional[float] = None,
+    faithful: bool = True,
+) -> dict:
+    """Evaluate fixed parameters on rolling out-of-sample cycle windows.
+
+    This is an analysis harness, not an optimizer: ``params`` are held fixed
+    across windows. ``warmup_cycles`` reserves the earliest observations, and
+    each test window is replayed independently so a position from one window
+    cannot leak into another. Explicit fee, gas, and borrow-cost assumptions in
+    ``BacktestParams`` are carried into every window and remain estimates.
+    """
+    if warmup_cycles < 0 or test_cycles <= 0:
+        raise ValueError(
+            "warmup_cycles must be non-negative and test_cycles must be positive"
+        )
+    step = step_cycles if step_cycles is not None else test_cycles
+    if step <= 0:
+        raise ValueError("step_cycles must be positive")
+
+    cycles = [
+        entry
+        for entry in state.load_entries(trades_file)
+        if entry.get("type") == "cycle"
+    ]
+    windows: list[dict] = []
+    start = min(warmup_cycles, len(cycles))
+    while start < len(cycles):
+        window_cycles = cycles[start : start + test_cycles]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".jsonl", prefix="openclaw-walk-forward-", delete=False
+        ) as handle:
+            for cycle in window_cycles:
+                handle.write(json.dumps(cycle) + "\n")
+            window_path = Path(handle.name)
+        try:
+            result = run(
+                params,
+                str(window_path),
+                seed_usd,
+                faithful=faithful,
+            )
+        finally:
+            window_path.unlink(missing_ok=True)
+        windows.append(
+            {
+                "start_cycle": start,
+                "end_cycle": start + len(window_cycles) - 1,
+                "start_ts": window_cycles[0].get("ts") if window_cycles else None,
+                "end_ts": window_cycles[-1].get("ts") if window_cycles else None,
+                "cycles": result.total_cycles,
+                "simulated_trades": result.simulated_trades,
+                "win_rate": result.win_rate,
+                "gross_pnl_usd": result.gross_pnl_usd,
+                "total_cost_usd": result.total_cost_usd,
+                "total_pnl_usd": result.total_pnl_usd,
+                "max_drawdown_usd": result.max_drawdown_usd,
+                "incomplete_snapshot_cycles": result.incomplete_snapshot_cycles,
+            }
+        )
+        start += step
+
+    total_pnl = sum(window["total_pnl_usd"] for window in windows)
+    total_cost = sum(window["total_cost_usd"] for window in windows)
+    return {
+        "method": "fixed_parameter_walk_forward",
+        "faithful": faithful,
+        "warmup_cycles": warmup_cycles,
+        "test_cycles": test_cycles,
+        "step_cycles": step,
+        "params": _params_dict(params),
+        "cost_model_is_estimate": True,
+        "windows": windows,
+        "aggregate": {
+            "windows": len(windows),
+            "profitable_windows": sum(
+                1 for window in windows if window["total_pnl_usd"] > 0
+            ),
+            "simulated_trades": sum(window["simulated_trades"] for window in windows),
+            "gross_pnl_usd": round(
+                sum(window["gross_pnl_usd"] for window in windows), 2
+            ),
+            "total_cost_usd": round(total_cost, 2),
+            "total_pnl_usd": round(total_pnl, 2),
+        },
+    }
 
 
 def compare(

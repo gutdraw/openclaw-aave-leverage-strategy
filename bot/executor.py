@@ -80,6 +80,7 @@ def _execute_steps(
         def on_confirmed(_step: int, _tx_hash: str, step_receipt: dict) -> None:
             receipt.clear()
             receipt.update(step_receipt)
+            journal.mark_step_confirmed(execution_id, _tx_hash, step_receipt)
 
         tx_hash = signer.execute_steps(
             response,
@@ -194,6 +195,7 @@ def close_position(
         )
 
     before_asset: Optional[float] = None
+    post_close_swap_execution_id: Optional[str] = None
     if direction == "long":
         try:
             before_asset = _wallet_token_balance(mcp.get_position(), cfg.asset)
@@ -257,6 +259,7 @@ def close_position(
                     cfg,
                     {"asset_amount": received_asset},
                 )
+                post_close_swap_execution_id = swap_execution_id
                 log.info("swap tx %s", swap_hash)
                 if journal is not None and swap_execution_id is not None:
                     journal.mark_state_recorded(
@@ -271,12 +274,22 @@ def close_position(
                 return ExecResult(
                     action="close",
                     tx_hash=tx_hash,
-                    raw={**resp, "post_close_swap_error": str(e)},
+                    raw={
+                        **resp,
+                        "post_close_swap_error": str(e),
+                        "post_close_swap_execution_id": post_close_swap_execution_id,
+                    },
                     execution_id=execution_id,
                 )
 
     return ExecResult(
-        action="close", tx_hash=tx_hash, raw=resp, execution_id=execution_id
+        action="close",
+        tx_hash=tx_hash,
+        raw={
+            **resp,
+            "post_close_swap_execution_id": post_close_swap_execution_id,
+        },
+        execution_id=execution_id,
     )
 
 

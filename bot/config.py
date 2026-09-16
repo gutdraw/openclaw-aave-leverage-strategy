@@ -136,13 +136,14 @@ class BotConfig:
     # Free public Base RPC — used for read-only on-chain data (utilization, liquidations).
     # For live mode with a private key, set this to a paid RPC for reliability.
     rpc_url: str = "https://mainnet.base.org"
-    # eth_getLogs lookback in blocks. Alchemy free tier: max 10 (~20s on Base).
-    # Alchemy PAYG supports up to 2000 (150 blocks ≈ 5 min is a good value then).
-    onchain_lookback_blocks: int = 10
+    # eth_getLogs lookback in blocks. The on-chain reader chunks requests to
+    # ten blocks for compatibility with strict public/free RPC range limits.
+    # 150 blocks is approximately five minutes on Base.
+    onchain_lookback_blocks: int = 150
     # Suppress new entries if USDC pool utilization exceeds this (borrow APR spike risk).
     max_usdc_utilization: float = 0.92
     # Suppress new entries if this many liquidations occurred within the lookback window.
-    # With 10-block window, even 1-2 liquidations in ~20s is notable stress.
+    # Even 1-2 liquidations in a five-minute window is notable stress.
     max_recent_liquidations: int = 3
 
     # ── Liquidity escape ──────────────────────────────────────────────────
