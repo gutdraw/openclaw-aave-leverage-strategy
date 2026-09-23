@@ -1,6 +1,47 @@
 from bot.config import BotConfig
 from bot.journal import ExecutionJournal
-from bot.main import _cycle_heartbeat_payload
+from bot.main import _cycle_heartbeat_payload, _safety_snapshot_incomplete
+from bot.market import MarketData
+
+
+def _market_data(*, position_available: bool, onchain_available: bool) -> MarketData:
+    return MarketData(
+        price=80_000.0,
+        change_1h=0.0,
+        change_24h=0.0,
+        change_7d=0.0,
+        borrow_apr=5.0,
+        btc_dominance=50.0,
+        health_factor=1.15,
+        total_collateral_usd=500.0,
+        position_data={"aave": {}},
+        position_available=position_available,
+        onchain_available=onchain_available,
+    )
+
+
+def test_safety_snapshot_requires_full_onchain_data_before_new_exposure():
+    data = _market_data(position_available=True, onchain_available=False)
+
+    assert _safety_snapshot_incomplete(data, None) is True
+
+
+def test_safety_snapshot_keeps_open_position_protection_available():
+    data = _market_data(position_available=True, onchain_available=False)
+
+    assert _safety_snapshot_incomplete(data, {"action": "open"}) is False
+
+
+def test_safety_snapshot_blocks_position_increase_without_full_onchain_data():
+    data = _market_data(position_available=True, onchain_available=False)
+
+    assert _safety_snapshot_incomplete(data, {"action": "open"}, new_exposure=True)
+
+
+def test_safety_snapshot_always_requires_position_snapshot():
+    data = _market_data(position_available=False, onchain_available=True)
+
+    assert _safety_snapshot_incomplete(data, {"action": "open"}) is True
 
 
 def test_cycle_heartbeat_sanitizes_source_failure_details(tmp_path):

@@ -635,6 +635,24 @@ def _ensure_wallet_token(
 # ── Single cycle ──────────────────────────────────────────────────────────────
 
 
+def _safety_snapshot_incomplete(
+    data: market.MarketData,
+    open_trade: Optional[dict],
+    *,
+    new_exposure: bool = False,
+) -> bool:
+    """Return whether the current cycle lacks data required for its scope.
+
+    A complete direct on-chain snapshot is required while flat because the
+    liquidation and utilization reads protect new exposure.  Once a position
+    is open, the position snapshot is the hard prerequisite for management;
+    transient entry-only RPC gaps must not bypass protective exits.
+    """
+    if not data.position_available:
+        return True
+    return (open_trade is None or new_exposure) and not data.onchain_available
+
+
 def run_cycle(
     cfg: BotConfig,
     raw_cfg: dict,
@@ -868,13 +886,19 @@ def run_cycle(
     if recovered_tail:
         cycle_entry["state_recovery_file"] = recovered_tail
 
-    if not cfg.paper_trading and (
-        not data.position_available or not data.onchain_available
-    ):
+    # Full direct on-chain completeness is an entry guard.  An open position
+    # still needs a complete MCP position snapshot, but a transient failure in
+    # an entry-only read (for example, the liquidation-log scan) must not
+    # suppress HF, price, or signal-based protection for exposure we already
+    # hold.  The relevant liquidity fields remain available to
+    # _liquidity_escape_reason when the RPC returned them.
+    if not cfg.paper_trading and _safety_snapshot_incomplete(data, open_trade):
         log.warning(
-            "Live safety snapshot incomplete (position=%s onchain=%s) — skipping cycle",
+            "Live safety snapshot incomplete (position=%s onchain=%s open_trade=%s) "
+            "— skipping cycle",
             data.position_available,
             data.onchain_available,
+            open_trade is not None,
         )
         cycle_entry["decision"] = "skip_safety_data_unavailable"
         state.append_entry(cfg.trades_file, cycle_entry)
@@ -1294,6 +1318,13 @@ def run_cycle(
         )
 
         if signal_upgraded:
+            if not cfg.paper_trading and _safety_snapshot_incomplete(
+                data, open_trade, new_exposure=True
+            ):
+                log.warning("Entry safety data incomplete — refusing position increase")
+                cycle_entry["decision"] = "skip_safety_data_unavailable"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
             if not cfg.paper_trading and not _risk_data_is_fresh(data, cfg):
                 log.warning(
                     "Dynamic Aave risk data unavailable — refusing position increase"

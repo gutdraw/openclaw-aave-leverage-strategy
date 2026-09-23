@@ -366,7 +366,7 @@ Field to extract: `lastFundingRate` (Binance) / `fundingRate` (Bybit/OKX), multi
 
 Asset → symbol mapping: WETH/wstETH → ETHUSDT / ETH-USDT-SWAP, cbBTC → BTCUSDT / BTC-USDT-SWAP.
 
-### Source 5 — Aave v3 Base on-chain state (soft — failure logged, not blocking)
+### Source 5 — Aave v3 Base on-chain state (soft for active-position management)
 
 Read directly from Base via eth_call and eth_getLogs. Uses the configured `rpc_url`
 (default public Base RPC; use Alchemy for longer lookback windows).
@@ -387,6 +387,12 @@ eth_getLogs for LiquidationCall on Aave v3 Pool in last onchain_lookback_blocks 
 - Aave v3 Pool: `0xA238Dd80C259a72e81d7e4664a9801593F98d1c5`
 - Topic: keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)")
 - Alchemy free tier: max 10 blocks (~20s). PAYG: set `onchain_lookback_blocks: 150` (~5 min).
+
+Full on-chain completeness is required before opening new exposure because the
+utilization and liquidation-history reads are entry filters. If a position is
+already open, a transient failure in one of those entry-only reads is logged as
+degraded telemetry but does not bypass position/HF/price protection; liquidity
+escape uses whichever direction-specific reserve fields are available.
 
 ### Source 6 — Fear & Greed Index (soft — failure logged, not blocking)
 
