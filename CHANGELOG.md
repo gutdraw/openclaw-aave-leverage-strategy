@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed — Provider-aware degraded cycles and price-safety guards
+
+- CoinGecko price failures now fall back to Coinbase/Kraken spot quotes with
+  bounded provider telemetry. Underlying BTC/ETH quotes remain reference-only
+  for cbBTC/wstETH, so they cannot create or increase wrapper exposure and do
+  not drive wrapper TP/SL exits.
+- A complete price outage now writes an auditable skipped cycle instead of
+  crashing the loop. Open positions retain direct Aave liquidity, health-factor,
+  and hard time-based protections when the chain snapshot can be reconciled.
+- Heartbeats now distinguish process liveness from cycle/price degradation with
+  attempt, last-success, consecutive-failure, price-provider, and eligibility
+  fields; persisted failure details remain sanitized.
+- Added regression coverage for blocked providers, no-price cycles, wrapper
+  proxy gating, open-position HF defense, and state reconciliation holds.
+
 ### Added — Auditable cycle and execution provenance
 
 - Every new cycle records a stable decision category, position state before the

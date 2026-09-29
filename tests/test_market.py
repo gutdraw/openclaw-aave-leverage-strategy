@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from types import SimpleNamespace
 
 from bot import market
 
@@ -81,3 +82,150 @@ def test_funding_telemetry_is_bounded_when_all_providers_fail(
     assert provider is None
     assert attempted == ("okx", "unsupported-provider")
     assert failures == ("okx:invalid_response", "unsupported-provider:unsupported")
+
+
+def test_fetch_uses_underlying_quote_but_blocks_wrapper_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url: str, **kwargs) -> _Response:
+        del kwargs
+        if url == market.COINGECKO_MARKETS:
+            return _Response(403, {})
+        if url == market.COINBASE_TICKER.format(pair="BTC-USD"):
+            return _Response(200, {"price": "83000"})
+        if url == market.COINGECKO_GLOBAL:
+            return _Response(200, {"data": {"market_cap_percentage": {"btc": 50}}})
+        if url == market.FEAR_GREED_URL:
+            return _Response(200, {"data": [{"value": "50"}]})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    position = {
+        "aave": {"healthFactor": 999, "totalCollateralUSD": 0},
+        "reserveRates": {
+            "USDC": {"borrowApy": 0.04, "supplyApy": 0.02},
+            "cbBTC": {"borrowApy": 0.01, "supplyApy": 0.0},
+        },
+        "tokenBalances": {},
+    }
+    onchain = SimpleNamespace(
+        available=True,
+        usdc_utilization=0.5,
+        asset_utilization=0.5,
+        recent_liquidations=0,
+        asset_frozen=False,
+        asset_paused=False,
+        borrow_asset_frozen=False,
+        borrow_asset_paused=False,
+        short_asset_utilization=0.5,
+        short_asset_frozen=False,
+        short_asset_paused=False,
+        risk_available=True,
+        reserve_ltv=0.8,
+        reserve_liquidation_threshold=0.85,
+        reserve_emode_category=None,
+        borrow_reserve_ltv=0.8,
+        borrow_reserve_liquidation_threshold=0.85,
+        borrow_reserve_emode_category=None,
+        account_ltv=0.0,
+        account_liquidation_threshold=0.0,
+        user_emode_category=0,
+        emode_liquidation_threshold=None,
+        risk_block=1,
+        risk_fetched_at="2026-09-29T00:00:00Z",
+    )
+
+    monkeypatch.setattr(market.httpx, "get", fake_get)
+    monkeypatch.setattr(
+        market,
+        "_fetch_funding_rate",
+        lambda *args, **kwargs: (0.01, "okx", ("okx",), ()),
+    )
+    monkeypatch.setattr("bot.onchain.fetch", lambda *args, **kwargs: onchain)
+
+    class _MCP:
+        wallet_address = "0x" + "0" * 40
+
+        def get_position(self) -> dict:
+            return position
+
+    data, failures = market.fetch(
+        "cbBTC",
+        _MCP(),
+        short_borrow_asset="cbBTC",
+    )
+
+    assert data.price == 83_000.0
+    assert data.price_available is True
+    assert data.price_provider == "coinbase_price"
+    assert data.price_entry_eligible is False
+    assert data.price_protection_eligible is False
+    assert "coingecko_prices:blocked_http_403" in failures
+
+
+def test_fetch_returns_partial_data_when_all_price_sources_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def blocked_get(url: str, **kwargs) -> _Response:
+        del url, kwargs
+        return _Response(403, {})
+
+    position = {
+        "aave": {"healthFactor": 999, "totalCollateralUSD": 0},
+        "reserveRates": {
+            "USDC": {"borrowApy": 0.04, "supplyApy": 0.02},
+            "cbBTC": {"borrowApy": 0.01, "supplyApy": 0.0},
+        },
+        "tokenBalances": {},
+    }
+    onchain = SimpleNamespace(
+        available=True,
+        usdc_utilization=0.5,
+        asset_utilization=0.5,
+        recent_liquidations=0,
+        asset_frozen=False,
+        asset_paused=False,
+        borrow_asset_frozen=False,
+        borrow_asset_paused=False,
+        short_asset_utilization=0.5,
+        short_asset_frozen=False,
+        short_asset_paused=False,
+        risk_available=True,
+        reserve_ltv=None,
+        reserve_liquidation_threshold=None,
+        reserve_emode_category=None,
+        borrow_reserve_ltv=None,
+        borrow_reserve_liquidation_threshold=None,
+        borrow_reserve_emode_category=None,
+        account_ltv=None,
+        account_liquidation_threshold=None,
+        user_emode_category=None,
+        emode_liquidation_threshold=None,
+        risk_block=None,
+        risk_fetched_at=None,
+    )
+
+    monkeypatch.setattr(market.httpx, "get", blocked_get)
+    monkeypatch.setattr(
+        market,
+        "_fetch_funding_rate",
+        lambda *args, **kwargs: (None, None, ("okx",), ("okx:blocked_http_403",)),
+    )
+    monkeypatch.setattr("bot.onchain.fetch", lambda *args, **kwargs: onchain)
+
+    class _MCP:
+        wallet_address = "0x" + "0" * 40
+
+        def get_position(self) -> dict:
+            return position
+
+    data, failures = market.fetch(
+        "cbBTC",
+        _MCP(),
+        short_borrow_asset="cbBTC",
+    )
+
+    assert data.price_available is False
+    assert data.price == 0.0
+    assert data.price_provider is None
+    assert any(label.startswith("coingecko_prices:") for label in failures)
+    assert all("https://" not in label for label in failures)

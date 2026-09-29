@@ -75,8 +75,20 @@ def _cycle_heartbeat_payload(
     cfg: BotConfig,
     journal: ExecutionJournal,
     provenance: Optional[dict[str, object]] = None,
+    *,
+    last_attempt_at: Optional[str] = None,
+    last_successful_cycle_at: Optional[str] = None,
+    consecutive_failures: int = 0,
 ) -> dict:
-    """Build the successful-cycle heartbeat payload without raw error details."""
+    """Build cycle heartbeat telemetry without raw provider error details."""
+    updated_at = state.now_iso()
+    price_available = result.get("price_available")
+    degraded = (
+        price_available is False
+        or result.get("market_data_degraded") is True
+        or bool(_heartbeat_strings(result.get("price_failures")))
+        or bool(_heartbeat_strings(result.get("sources_failed")))
+    )
     decision_category = result.get(
         "decision_category"
     ) or state.classify_cycle_decision(
@@ -85,11 +97,20 @@ def _cycle_heartbeat_payload(
         result.get("signal"),
     )
     payload = {
-        "status": "ok",
-        "updated_at": state.now_iso(),
+        "status": "error" if price_available is False else "ok",
+        "updated_at": updated_at,
+        "last_attempt_at": last_attempt_at or updated_at,
+        "last_successful_cycle_at": last_successful_cycle_at,
+        "consecutive_failures": consecutive_failures,
         "last_decision": result.get("decision"),
         "last_decision_category": decision_category,
         "last_price": result.get("price"),
+        "last_price_available": price_available,
+        "last_price_provider": result.get("price_provider"),
+        "last_price_entry_eligible": result.get("price_entry_eligible"),
+        "last_price_protection_eligible": result.get("price_protection_eligible"),
+        "last_price_failures": _heartbeat_source_labels(result.get("price_failures")),
+        "market_data_degraded": degraded,
         "last_health_factor": result.get("health_factor"),
         "last_funding_rate": result.get("funding_rate"),
         "last_funding_provider": result.get("funding_provider"),
@@ -114,7 +135,50 @@ def _cycle_heartbeat_payload(
     durations = result.get("source_fetch_duration_ms")
     if isinstance(durations, dict):
         payload["last_source_fetch_duration_ms"] = durations
+    if price_available is False:
+        payload["error"] = "market_data_unavailable"
     return payload
+
+
+def _cycle_error_code(error: Exception) -> str:
+    """Return a bounded error code suitable for persistent heartbeat state."""
+    message = str(error).casefold()
+    if "nonce too low" in message:
+        return "nonce_too_low"
+    if "insufficient_data" in message or "price unavailable" in message:
+        return "market_data_unavailable"
+    if "timeout" in message:
+        return "request_timeout"
+    return type(error).__name__
+
+
+def _cycle_error_heartbeat_payload(
+    cfg: BotConfig,
+    journal: ExecutionJournal,
+    provenance: Optional[dict[str, object]],
+    error: Exception,
+    *,
+    attempt_at: str,
+    last_successful_cycle_at: Optional[str],
+    consecutive_failures: int,
+) -> dict:
+    """Build an error heartbeat without persisting raw exception details."""
+    error_code = _cycle_error_code(error)
+    return {
+        "status": "error",
+        "updated_at": state.now_iso(),
+        "last_attempt_at": attempt_at,
+        "last_successful_cycle_at": last_successful_cycle_at,
+        "consecutive_failures": consecutive_failures,
+        "error": error_code,
+        "failure_code": error_code,
+        "unresolved_execution_count": len(journal.recoverable()),
+        "asset": cfg.asset,
+        "paper_trading": cfg.paper_trading,
+        "provenance": provenance
+        if provenance is not None
+        else build_runtime_provenance(cfg._config_path),
+    }
 
 
 def _paper_health_factor(
@@ -653,6 +717,224 @@ def _safety_snapshot_incomplete(
     return (open_trade is None or new_exposure) and not data.onchain_available
 
 
+def _max_hold_due(open_trade: dict, cfg: BotConfig) -> bool:
+    """Return whether a position has reached its hard time-based exit."""
+    direction = open_trade.get("direction", "long")
+    max_hold = (
+        cfg.long_max_hold_days
+        if direction == "long" and cfg.long_max_hold_days > 0
+        else cfg.max_hold_days
+    )
+    if max_hold <= 0:
+        return False
+    try:
+        opened = datetime.fromisoformat(str(open_trade["ts"]).replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError):
+        return False
+    age_days = (datetime.now(timezone.utc) - opened).total_seconds() / 86400
+    return age_days >= max_hold
+
+
+def _degraded_cycle_entry(
+    data: market.MarketData,
+    sources_failed: list[str],
+    cfg: BotConfig,
+    open_trade: Optional[dict],
+    provenance: dict[str, object],
+) -> dict:
+    """Build an auditable cycle entry when no usable price quote exists."""
+    return {
+        "type": "cycle",
+        "ts": state.now_iso(),
+        "asset": cfg.asset,
+        "position_state_before": "open" if open_trade is not None else "flat",
+        "provenance": provenance,
+        "price": None,
+        "price_available": False,
+        "price_provider": data.price_provider,
+        "price_entry_eligible": data.price_entry_eligible,
+        "price_protection_eligible": data.price_protection_eligible,
+        "price_failures": list(data.price_failures),
+        "signal": "unavailable",
+        "direction": open_trade.get("direction") if open_trade else "none",
+        "score": None,
+        "decision": "skip_market_data_unavailable",
+        "health_factor": data.health_factor,
+        "borrow_apr": data.borrow_apr,
+        "short_borrow_apr": data.short_borrow_apr,
+        "btc_dominance_pct": data.btc_dominance,
+        "funding_rate": data.funding_rate,
+        "funding_provider": data.funding_provider,
+        "funding_sources_attempted": list(data.funding_sources_attempted),
+        "funding_failures": list(data.funding_failures),
+        "fear_greed": data.fear_greed,
+        "volume_24h": data.volume_24h,
+        "recent_liquidations": data.recent_liquidations,
+        "wallet_collateral_usd": round(data.wallet_collateral_usd, 2),
+        "position_data_available": data.position_available,
+        "onchain_data_available": data.onchain_available,
+        "risk_data_available": data.risk_data_available,
+        "risk_block": data.risk_block,
+        "risk_fetched_at": data.risk_fetched_at,
+        "sources_failed": list(sources_failed),
+        "source_observed_at": dict(data.source_observed_at),
+        "source_fetch_duration_ms": dict(data.source_fetch_duration_ms),
+        "market_data_degraded": True,
+        "paper_trading": cfg.paper_trading,
+    }
+
+
+def _run_price_unavailable_cycle(
+    cfg: BotConfig,
+    raw_cfg: dict,
+    data: market.MarketData,
+    sources_failed: list[str],
+    entries: list[dict],
+    open_trade: Optional[dict],
+    eff_supply: float,
+    eff_borrow: float,
+    eff_entry_price: float,
+    cycle_provenance: dict[str, object],
+    mcp: MCPClient,
+    signer,
+    journal: Optional[ExecutionJournal],
+) -> dict:
+    """Fail closed on entries while preserving direct safety for open positions."""
+    cycle_entry = _degraded_cycle_entry(
+        data, sources_failed, cfg, open_trade, cycle_provenance
+    )
+    if cfg.paper_trading:
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    if open_trade is None:
+        if _safety_snapshot_incomplete(data, None):
+            cycle_entry["decision"] = "skip_safety_data_unavailable"
+        elif _aave_positions(data.position_data):
+            cycle_entry["decision"] = "skip_state_reconciliation"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    if _safety_snapshot_incomplete(data, open_trade):
+        cycle_entry["decision"] = "skip_safety_data_unavailable"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    direction = open_trade.get("direction", "long")
+    expected_id = str(open_trade.get("position_id") or "")
+    chain_position = _find_chain_position(
+        data.position_data, expected_id, direction, cfg
+    )
+    if chain_position is None:
+        cycle_entry["decision"] = "skip_state_reconciliation"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
+    chain_supply, chain_borrow = _chain_position_size(
+        chain_position,
+        direction,
+        cfg,
+        float(open_trade.get("leverage") or cfg.leverage_for(direction)),
+    )
+    if chain_supply > 0 and chain_borrow > 0:
+        eff_supply, eff_borrow = chain_supply, chain_borrow
+    pos_id = _position_id_for(direction, cfg, raw_cfg)
+
+    escape_reason = _liquidity_escape_reason(data, entries, cfg, direction)
+    if escape_reason:
+        res = executor.close_position(
+            pos_id, direction, eff_supply, cfg, mcp, signer, journal
+        )
+        trade_entry = _close_trade_entry(
+            open_trade,
+            None,
+            cfg,
+            escape_reason,
+            res,
+            eff_supply,
+            eff_borrow,
+            eff_entry_price,
+        )
+        cycle_entry["decision"] = escape_reason
+        state.append_entry(cfg.trades_file, cycle_entry)
+        state.append_entry(cfg.trades_file, trade_entry)
+        _record_execution(journal, res, trade_entry)
+        return cycle_entry
+
+    hf_close = (
+        cfg.short_hf_defense_close if direction == "short" else cfg.hf_defense_close
+    )
+    hf_reduce = (
+        cfg.short_hf_defense_reduce if direction == "short" else cfg.hf_defense_reduce
+    )
+    if data.health_factor < hf_close:
+        res = executor.close_position(
+            pos_id, direction, eff_supply, cfg, mcp, signer, journal
+        )
+        trade_entry = _close_trade_entry(
+            open_trade,
+            None,
+            cfg,
+            "hf_close",
+            res,
+            eff_supply,
+            eff_borrow,
+            eff_entry_price,
+        )
+        cycle_entry["decision"] = "hf_close"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        state.append_entry(cfg.trades_file, trade_entry)
+        _record_execution(journal, res, trade_entry)
+        return cycle_entry
+
+    if data.health_factor < hf_reduce:
+        target_lev = max(cfg.leverage_for(direction) / 2, 1.5)
+        res = executor.reduce_position(
+            pos_id, direction, target_lev, cfg, mcp, signer, journal
+        )
+        reduce_entry = {
+            "type": "trade",
+            "action": "reduce",
+            "ts": state.now_iso(),
+            "asset": cfg.asset,
+            "direction": direction,
+            "position_id": pos_id,
+            "target_leverage": target_lev,
+            "price": None,
+            "paper": cfg.paper_trading,
+            "tx_hash": res.tx_hash,
+            "execution_id": res.execution_id,
+        }
+        cycle_entry["decision"] = "hf_reduce"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        state.append_entry(cfg.trades_file, reduce_entry)
+        _record_execution(journal, res, reduce_entry)
+        return cycle_entry
+
+    if _max_hold_due(open_trade, cfg):
+        res = executor.close_position(
+            pos_id, direction, eff_supply, cfg, mcp, signer, journal
+        )
+        trade_entry = _close_trade_entry(
+            open_trade,
+            None,
+            cfg,
+            "max_hold_days",
+            res,
+            eff_supply,
+            eff_borrow,
+            eff_entry_price,
+        )
+        cycle_entry["decision"] = "max_hold_days"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        state.append_entry(cfg.trades_file, trade_entry)
+        _record_execution(journal, res, trade_entry)
+        return cycle_entry
+
+    state.append_entry(cfg.trades_file, cycle_entry)
+    return cycle_entry
+
+
 def run_cycle(
     cfg: BotConfig,
     raw_cfg: dict,
@@ -726,6 +1008,23 @@ def run_cycle(
         funding_sources=cfg.funding_sources,
     )
 
+    if not data.price_available:
+        return _run_price_unavailable_cycle(
+            cfg,
+            raw_cfg,
+            data,
+            sources_failed,
+            entries,
+            open_trade,
+            eff_supply,
+            eff_borrow,
+            eff_entry_price,
+            cycle_provenance,
+            mcp,
+            signer,
+            journal,
+        )
+
     # In paper mode, replace on-chain HF with a simulated value derived from
     # the paper position — real wallet HF belongs to whatever is live on-chain
     # and should not influence paper trading decisions.
@@ -761,6 +1060,12 @@ def run_cycle(
         "position_state_before": "open" if open_trade is not None else "flat",
         "provenance": cycle_provenance,
         "price": data.price,
+        "price_available": data.price_available,
+        "price_provider": data.price_provider,
+        "price_entry_eligible": data.price_entry_eligible,
+        "price_protection_eligible": data.price_protection_eligible,
+        "price_failures": list(data.price_failures),
+        "market_data_degraded": bool(data.price_failures or sources_failed),
         "change_1h": data.change_1h,
         "change_24h": data.change_24h,
         "change_7d": data.change_7d,
@@ -1062,6 +1367,36 @@ def run_cycle(
             _record_execution(journal, res, reduce_entry)
             return cycle_entry
 
+    # An underlying exchange quote is useful as a reference during an outage,
+    # but it is not safe for wrapper-asset TP/SL or trailing-stop calculations.
+    # Keep direct HF/liquidity/time protection active and defer price exits.
+    if open_trade is not None and not data.price_protection_eligible:
+        if _max_hold_due(open_trade, cfg):
+            supply_units = (
+                eff_supply if eff_supply > 0 else float(open_trade.get("supply", 0))
+            )
+            res = executor.close_position(
+                pos_id, open_direction, supply_units, cfg, mcp, signer, journal
+            )
+            trade_entry = _close_trade_entry(
+                open_trade,
+                None,
+                cfg,
+                "max_hold_days",
+                res,
+                eff_supply,
+                eff_borrow,
+                eff_entry_price,
+            )
+            cycle_entry["decision"] = "max_hold_days"
+            state.append_entry(cfg.trades_file, cycle_entry)
+            state.append_entry(cfg.trades_file, trade_entry)
+            _record_execution(journal, res, trade_entry)
+            return cycle_entry
+        cycle_entry["decision"] = "skip_price_protection_unavailable"
+        state.append_entry(cfg.trades_file, cycle_entry)
+        return cycle_entry
+
     # ── 5. Exit check (TP / SL) on open position ──────────────────────────
     # Runs before signal reversal — price-based stops are deterministic and
     # should always take priority over signal-based exits.
@@ -1318,6 +1653,15 @@ def run_cycle(
         )
 
         if signal_upgraded:
+            if not data.price_entry_eligible:
+                log.warning(
+                    "Price provider %s is not wrapper-aware for %s — refusing increase",
+                    data.price_provider,
+                    cfg.asset,
+                )
+                cycle_entry["decision"] = "skip_price_source_not_entry_eligible"
+                state.append_entry(cfg.trades_file, cycle_entry)
+                return cycle_entry
             if not cfg.paper_trading and _safety_snapshot_incomplete(
                 data, open_trade, new_exposure=True
             ):
@@ -1569,6 +1913,15 @@ def run_cycle(
         return cycle_entry
 
     if open_trade is None and sig.multiplier > 0:
+        if not data.price_entry_eligible:
+            log.warning(
+                "Price provider %s is not wrapper-aware for %s — refusing new exposure",
+                data.price_provider,
+                cfg.asset,
+            )
+            cycle_entry["decision"] = "skip_price_source_not_entry_eligible"
+            state.append_entry(cfg.trades_file, cycle_entry)
+            return cycle_entry
         if not cfg.paper_trading and not _risk_data_is_fresh(data, cfg):
             log.warning("Dynamic Aave risk data unavailable — refusing new exposure")
             cycle_entry["decision"] = "skip_risk_config_unavailable"
@@ -1746,7 +2099,7 @@ def run_cycle(
 
 def _close_trade_entry(
     open_trade: dict,
-    close_price: float,
+    close_price: Optional[float],
     cfg: BotConfig,
     reason: str,
     res,
@@ -1763,7 +2116,6 @@ def _close_trade_entry(
     # Use borrow-weighted avg entry price when position was increased
     if eff_entry_price > 0:
         effective["entry_price"] = eff_entry_price
-    realised = pnl.compute_realised(effective, close_price)
     entry = {
         "type": "trade",
         "action": "close",
@@ -1776,12 +2128,17 @@ def _close_trade_entry(
         "supply": effective.get("supply"),
         "borrow": effective.get("borrow"),
         "leverage": open_trade.get("leverage"),
-        "realised_usd": round(realised, 2),
         "reason": reason,
         "paper": cfg.paper_trading,
         "tx_hash": res.tx_hash,
         "execution_id": res.execution_id,
     }
+    if close_price is not None:
+        realised = pnl.compute_realised(effective, close_price)
+        entry["realised_usd"] = round(realised, 2)
+    else:
+        entry["realised_usd"] = None
+        entry["pnl_pending_price"] = True
     if isinstance(res.raw, dict) and res.raw.get("post_close_swap_error"):
         entry["post_close_swap_error"] = res.raw["post_close_swap_error"]
     if isinstance(res.raw, dict) and res.raw.get("post_close_swap_execution_id"):
@@ -1829,6 +2186,9 @@ def main() -> None:
         {
             "status": "starting",
             "updated_at": state.now_iso(),
+            "last_attempt_at": None,
+            "last_successful_cycle_at": None,
+            "consecutive_failures": 0,
             "asset": cfg.asset,
             "paper_trading": cfg.paper_trading,
             "unresolved_execution_count": len(journal.recoverable()),
@@ -1850,65 +2210,97 @@ def main() -> None:
         config_path=cfg._config_path,
         session_duration=cfg.mcp_session_duration,
     )
+    last_successful_cycle_at: Optional[str] = None
+    consecutive_failures = 0
 
     if args.loop > 0:
         while True:
+            attempt_at = state.now_iso()
             try:
                 result = run_cycle(cfg, raw_cfg, signer, mcp, journal, provenance)
                 log.info(
-                    "Cycle done — decision=%s direction=%s price=%.2f",
+                    "Cycle done — decision=%s direction=%s price=%s",
                     result.get("decision"),
                     result.get("direction"),
-                    result.get("price", 0),
+                    result.get("price"),
                 )
+                if result.get("price_available") is False:
+                    consecutive_failures += 1
+                else:
+                    last_successful_cycle_at = state.now_iso()
+                    consecutive_failures = 0
                 heartbeat.write(
                     cfg.runtime_heartbeat_file(),
-                    _cycle_heartbeat_payload(result, cfg, journal, provenance),
+                    _cycle_heartbeat_payload(
+                        result,
+                        cfg,
+                        journal,
+                        provenance,
+                        last_attempt_at=attempt_at,
+                        last_successful_cycle_at=last_successful_cycle_at,
+                        consecutive_failures=consecutive_failures,
+                    ),
                 )
             except Exception as e:
                 log.error("Cycle error: %s", e, exc_info=True)
                 if signer:
                     signer.reset_nonce()  # force re-fetch after any error
+                consecutive_failures += 1
                 heartbeat.write(
                     cfg.runtime_heartbeat_file(),
-                    {
-                        "status": "error",
-                        "updated_at": state.now_iso(),
-                        "error": f"{type(e).__name__}: {e}"[:1000],
-                        "unresolved_execution_count": len(journal.recoverable()),
-                        "asset": cfg.asset,
-                        "paper_trading": cfg.paper_trading,
-                        "provenance": provenance,
-                    },
+                    _cycle_error_heartbeat_payload(
+                        cfg,
+                        journal,
+                        provenance,
+                        e,
+                        attempt_at=attempt_at,
+                        last_successful_cycle_at=last_successful_cycle_at,
+                        consecutive_failures=consecutive_failures,
+                    ),
                 )
             log.info("Sleeping %ds…", args.loop)
             time.sleep(args.loop)
     else:
+        attempt_at = state.now_iso()
         try:
             result = run_cycle(cfg, raw_cfg, signer, mcp, journal, provenance)
             log.info(
-                "Cycle done — decision=%s direction=%s price=%.2f",
+                "Cycle done — decision=%s direction=%s price=%s",
                 result.get("decision"),
                 result.get("direction"),
-                result.get("price", 0),
+                result.get("price"),
             )
             heartbeat.write(
                 cfg.runtime_heartbeat_file(),
-                _cycle_heartbeat_payload(result, cfg, journal, provenance),
+                _cycle_heartbeat_payload(
+                    result,
+                    cfg,
+                    journal,
+                    provenance,
+                    last_attempt_at=attempt_at,
+                    last_successful_cycle_at=(
+                        state.now_iso()
+                        if result.get("price_available") is not False
+                        else None
+                    ),
+                    consecutive_failures=(
+                        0 if result.get("price_available") is not False else 1
+                    ),
+                ),
             )
         except Exception as e:
             log.error("Cycle error: %s", e, exc_info=True)
             heartbeat.write(
                 cfg.runtime_heartbeat_file(),
-                {
-                    "status": "error",
-                    "updated_at": state.now_iso(),
-                    "error": f"{type(e).__name__}: {e}"[:1000],
-                    "unresolved_execution_count": len(journal.recoverable()),
-                    "asset": cfg.asset,
-                    "paper_trading": cfg.paper_trading,
-                    "provenance": provenance,
-                },
+                _cycle_error_heartbeat_payload(
+                    cfg,
+                    journal,
+                    provenance,
+                    e,
+                    attempt_at=attempt_at,
+                    last_successful_cycle_at=None,
+                    consecutive_failures=1,
+                ),
             )
             sys.exit(1)
 

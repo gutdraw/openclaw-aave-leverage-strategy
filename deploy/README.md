@@ -36,10 +36,13 @@ With `--config`, the same five-minute health run performs an independent,
 read-only Aave account-risk probe and writes `trades.risk.json` atomically. It
 warns at direct health factor 1.14, escalates at 1.12, and raises critical
 alerts if the probe is unavailable or the snapshot is older than ten minutes.
-The heartbeat also records the selected funding provider and sanitized source
-failure labels. The checker raises warning alerts for
+The heartbeat also records the selected funding provider, sanitized source
+failure labels, the last successful cycle, and whether the current quote is
+eligible for entry and price protection. Wrapped-asset fallback quotes are
+reference-only and therefore keep the cycle auditable while blocking new or
+price-based risk decisions. The checker raises warning alerts for
 `funding_rate_unavailable` and `market_data_degraded` when those signals are
-present.
+present; a complete price outage is recorded as a critical heartbeat error.
 No trading decision is changed by the checker.
 
 Do not run the service and the previous `screen` process at the same time. The

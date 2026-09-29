@@ -1,7 +1,4 @@
-"""
-Market data fetcher — pulls from 3 independent sources.
-Requires at least 2 to succeed, otherwise raises RuntimeError("insufficient_data:...").
-"""
+"""Market data fetcher with provider-aware degraded-mode telemetry."""
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +10,8 @@ import httpx
 
 COINGECKO_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+COINBASE_TICKER = "https://api.exchange.coinbase.com/products/{pair}/ticker"
+KRAKEN_TICKER = "https://api.kraken.com/0/public/Ticker"
 BINANCE_PREMIUM = "https://fapi.binance.com/fapi/v1/premiumIndex"
 BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
 OKX_FUNDING = "https://www.okx.com/api/v5/public/funding-rate"
@@ -26,6 +25,23 @@ ASSET_TO_CG_ID: dict[str, str] = {
     "cbBTC": "coinbase-wrapped-btc",
     "wstETH": "wrapped-steth",
 }
+
+ASSET_TO_COINBASE_SPOT: dict[str, str] = {
+    "WETH": "ETH-USD",
+    "ETH": "ETH-USD",
+    "wstETH": "ETH-USD",
+    "cbBTC": "BTC-USD",
+}
+ASSET_TO_KRAKEN_SPOT: dict[str, str] = {
+    "WETH": "ETHUSD",
+    "ETH": "ETHUSD",
+    "wstETH": "ETHUSD",
+    "cbBTC": "XBTUSD",
+}
+
+# Underlying exchange quotes are useful for emergency reference and trend
+# context, but they are not authoritative wrapper quotes for these assets.
+_UNDERLYING_PRICE_PROXY_ASSETS = frozenset({"cbbtc", "wsteth"})
 
 # Map bot asset → exchange perpetual symbols for funding rate
 ASSET_TO_BINANCE: dict[str, str] = {
@@ -53,6 +69,11 @@ class MarketData:
     health_factor: float  # current Aave HF (999 = no debt)
     total_collateral_usd: float
     position_data: dict  # raw get_position response
+    price_available: bool = True
+    price_provider: Optional[str] = None
+    price_entry_eligible: bool = True
+    price_protection_eligible: bool = True
+    price_failures: tuple[str, ...] = ()
     position_available: bool = False  # MCP position snapshot was complete
     onchain_available: bool = False  # all direct Aave safety reads succeeded
     volume_24h: Optional[float] = None  # 24h spot volume in USD (from CoinGecko)
@@ -117,6 +138,76 @@ def _record_source(
 ) -> None:
     observed_at[source] = _now_iso()
     durations_ms[source] = round(max(time.monotonic() - started, 0.0) * 1000, 1)
+
+
+def _source_failure_label(source: str, error: Exception) -> str:
+    """Return bounded provider telemetry without URLs or response bodies."""
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code in (401, 403, 451):
+        return f"{source}:blocked_http_{status_code}"
+    if status_code is not None:
+        return f"{source}:http_{status_code}"
+    if isinstance(error, httpx.TimeoutException):
+        return f"{source}:timeout"
+    if isinstance(error, (KeyError, IndexError, TypeError, ValueError)):
+        return f"{source}:invalid_response"
+    return f"{source}:request_error"
+
+
+def _valid_price(value: object) -> float:
+    """Return a positive finite price or raise for an invalid provider value."""
+    price = float(value)
+    if not isfinite(price) or price <= 0:
+        raise ValueError("price is not positive and finite")
+    return price
+
+
+def _fetch_reference_price(
+    asset: str,
+    timeout: int,
+    observed_at: dict[str, str],
+    durations_ms: dict[str, float],
+) -> tuple[Optional[float], Optional[str], tuple[str, ...]]:
+    """Fetch a current exchange quote after the wrapper-aware source fails.
+
+    These quotes are explicitly marked as reference proxies by the caller for
+    wrapper assets such as cbBTC and wstETH. They are never silently promoted
+    to authoritative entry prices.
+    """
+    failures: list[str] = []
+    providers = (
+        ("coinbase_price", ASSET_TO_COINBASE_SPOT.get(asset)),
+        ("kraken_price", ASSET_TO_KRAKEN_SPOT.get(asset)),
+    )
+    for provider, pair in providers:
+        started = time.monotonic()
+        try:
+            if not pair:
+                raise ValueError("unsupported asset")
+            if provider == "coinbase_price":
+                response = httpx.get(COINBASE_TICKER.format(pair=pair), timeout=timeout)
+                response.raise_for_status()
+                price = _valid_price(response.json()["price"])
+            else:
+                response = httpx.get(
+                    KRAKEN_TICKER,
+                    params={"pair": pair},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                result = response.json().get("result", {})
+                ticker = next(
+                    (value for key, value in result.items() if key != "last"), None
+                )
+                price = _valid_price(ticker["c"][0])
+        except Exception as error:
+            failures.append(_source_failure_label(provider, error))
+        else:
+            return price, provider, tuple(failures)
+        finally:
+            _record_source(observed_at, durations_ms, provider, started)
+    return None, None, tuple(failures)
 
 
 def _funding_response(provider: str, asset: str, timeout: int):
@@ -217,15 +308,23 @@ def fetch(
     funding_sources: Optional[Sequence[str]] = None,
 ) -> tuple[MarketData, list[str]]:
     """
-    Fetch from all 3 sources and return (MarketData, sources_failed).
-    Raises RuntimeError if fewer than 2 sources succeed.
+    Fetch market and safety data and return (MarketData, sources_failed).
+
+    Partial data is returned instead of raising for provider degradation. The
+    caller decides whether the current scope is safe to continue: flat/new
+    exposure must fail closed, while an open position can still use direct
+    Aave risk data for defensive actions.
     """
     sources_failed: list[str] = []
     source_observed_at: dict[str, str] = {}
     source_fetch_duration_ms: dict[str, float] = {}
 
-    # ── Source 1: CoinGecko coin prices ───────────────────────────────────
+    # ── Source 1: CoinGecko wrapper-aware price/trend data ────────────────
     price = change_1h = change_24h = change_7d = volume_24h = None
+    price_provider: Optional[str] = None
+    price_entry_eligible = False
+    price_protection_eligible = False
+    price_failures: list[str] = []
     source_started = time.monotonic()
     try:
         cg_id = ASSET_TO_CG_ID.get(asset, asset.lower())
@@ -240,13 +339,18 @@ def fetch(
         )
         r.raise_for_status()
         coin = r.json()[0]
-        price = float(coin["current_price"])
+        price = _valid_price(coin["current_price"])
         change_1h = float(coin.get("price_change_percentage_1h_in_currency") or 0)
         change_24h = float(coin.get("price_change_percentage_24h_in_currency") or 0)
         change_7d = float(coin.get("price_change_percentage_7d_in_currency") or 0)
         volume_24h = float(coin.get("total_volume") or 0) or None
+        price_provider = "coingecko"
+        price_entry_eligible = True
+        price_protection_eligible = True
     except Exception as e:
-        sources_failed.append(f"coingecko_prices:{e}")
+        failure = _source_failure_label("coingecko_prices", e)
+        sources_failed.append(failure)
+        price_failures.append(failure)
     finally:
         _record_source(
             source_observed_at,
@@ -254,6 +358,25 @@ def fetch(
             "coingecko_prices",
             source_started,
         )
+
+    # CoinGecko can be blocked independently of other public APIs. Keep a
+    # current exchange quote available for defensive reference, but do not use
+    # an underlying BTC/ETH quote to open a wrapper asset position.
+    if price is None:
+        fallback_price, fallback_provider, fallback_failures = _fetch_reference_price(
+            asset,
+            timeout,
+            source_observed_at,
+            source_fetch_duration_ms,
+        )
+        sources_failed.extend(fallback_failures)
+        price_failures.extend(fallback_failures)
+        if fallback_price is not None:
+            price = fallback_price
+            price_provider = fallback_provider
+            is_proxy = asset.casefold() in _UNDERLYING_PRICE_PROXY_ASSETS
+            price_entry_eligible = not is_proxy
+            price_protection_eligible = not is_proxy
 
     # ── Source 2: get_position (on-chain Aave state) ──────────────────────
     pos: Optional[dict] = None
@@ -271,7 +394,7 @@ def fetch(
         total_collateral_usd = float(pos["aave"]["totalCollateralUSD"])
         position_available = isinstance(pos, dict) and isinstance(pos.get("aave"), dict)
     except Exception as e:
-        sources_failed.append(f"get_position:{e}")
+        sources_failed.append(_source_failure_label("get_position", e))
     finally:
         _record_source(
             source_observed_at,
@@ -313,7 +436,7 @@ def fetch(
         r.raise_for_status()
         btc_dominance = float(r.json()["data"]["market_cap_percentage"]["btc"])
     except Exception as e:
-        sources_failed.append(f"coingecko_global:{e}")
+        sources_failed.append(_source_failure_label("coingecko_global", e))
     finally:
         _record_source(
             source_observed_at,
@@ -371,7 +494,7 @@ def fetch(
         r.raise_for_status()
         fear_greed = int(r.json()["data"][0]["value"])
     except Exception as e:
-        sources_failed.append(f"fear_greed:{e}")
+        sources_failed.append(_source_failure_label("fear_greed", e))
     finally:
         _record_source(
             source_observed_at,
@@ -391,20 +514,6 @@ def fetch(
         except (TypeError, ValueError):
             pass
 
-    succeeded = sum(x is not None for x in [price, borrow_apr, btc_dominance])
-    if succeeded < 2:
-        raise RuntimeError(
-            f"insufficient_data: {succeeded}/3 sources succeeded. "
-            f"Failures: {sources_failed}"
-        )
-
-    # Price is mandatory — without it we cannot size positions or compute P&L
-    if price is None:
-        raise RuntimeError(
-            f"insufficient_data: price unavailable (CoinGecko failed). "
-            f"Failures: {sources_failed}"
-        )
-
     return MarketData(
         price=price or 0.0,
         change_1h=change_1h or 0.0,
@@ -415,6 +524,11 @@ def fetch(
         health_factor=health_factor if health_factor is not None else 999.0,
         total_collateral_usd=total_collateral_usd or 0.0,
         position_data=pos or {},
+        price_available=price is not None,
+        price_provider=price_provider,
+        price_entry_eligible=price_entry_eligible,
+        price_protection_eligible=price_protection_eligible,
+        price_failures=tuple(price_failures),
         position_available=position_available,
         onchain_available=oc.available,
         volume_24h=volume_24h,

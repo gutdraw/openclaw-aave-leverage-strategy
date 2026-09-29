@@ -299,9 +299,12 @@ The file is gitignored — it contains your wallet address.
 
 ## Market research
 
-At the start of every cycle, fetch data from three sources in this order:
+At the start of every cycle, fetch market and safety data from the configured
+providers. Price-source eligibility is tracked separately from whether a quote
+exists, because an underlying exchange quote is not automatically a valid quote
+for a wrapped lending asset.
 
-### Source 1 — CoinGecko price trend (required)
+### Source 1 — CoinGecko price trend (preferred, wrapper-aware)
 
 ```
 GET https://api.coingecko.com/api/v3/coins/markets
@@ -322,6 +325,15 @@ Fields to extract:
 - `price_change_percentage_7d_in_currency` — 7d % change
 
 > Note: 4h data is not available on the CoinGecko free tier. This skill uses 1h / 24h / 7d.
+
+If CoinGecko is unavailable, the bot tries Coinbase and Kraken spot tickers. For
+WETH/ETH, those quotes may be used as the current price. For cbBTC and wstETH,
+the BTC/ETH quote is reference-only: the cycle records the provider as degraded,
+refuses new or increased exposure, and defers price-based exits. Direct Aave
+health-factor, liquidity, and hard time protections remain active for an open
+position. If every price source fails, the bot records an auditable skipped cycle
+with `price_available: false` and does not open exposure; it still attempts the
+direct safety actions available from the chain snapshot.
 
 ### Source 2 — Aave borrow rate (via get_position)
 
@@ -426,14 +438,19 @@ does not block the cycle.
 
 ### Fallback behavior
 
-Sources 1-3 (CoinGecko prices, get_position, CoinGecko global) are required. Sources 4-6 are soft — if unavailable, the corresponding filter is simply skipped.
+The wrapper-aware price, `get_position`, and direct on-chain risk snapshot are
+the safety-critical inputs. CoinGecko global, funding, Fear & Greed, and OHLCV
+are soft or signal-supporting sources — if unavailable, the corresponding filter
+or signal path is skipped or degraded.
 
-- If any required source fails: log in `sources_failed`, continue with remaining sources.
-- If fewer than 2 required sources succeed: write a cycle entry with
-  `"decision": "skip_insufficient_data"` and exit without acting.
-- Price is always mandatory: if CoinGecko prices fail, exit regardless of other sources.
-- Note: `get_position` is always called if a position is open (Step 6) — if it fails,
-  treat it as a hard stop and exit without acting regardless of other sources.
+- Every provider failure is represented by a bounded label in `sources_failed`
+  and the heartbeat; raw URLs and response bodies are not persisted.
+- Flat or new exposure fails closed when the position or direct on-chain safety
+  snapshot is incomplete.
+- A live open position may still use direct Aave health-factor and liquidity
+  protection when an entry-only source is unavailable; if the chain position
+  cannot be reconciled to local state, the bot records `skip_state_reconciliation`
+  and takes no action.
 
 ---
 
@@ -580,9 +597,11 @@ Scan `trades.jsonl` (if it exists) to find:
 - The last cycle's `btc_dominance_pct` for the BTC dominance filter
 
 **Step 3 — Fetch market data**
-Fetch all sources. CoinGecko prices, `get_position`, and CoinGecko global are required.
-Sources 4–7 (funding rate, F&G, on-chain, OHLCV) are soft — failure is logged but does not
-block the cycle. If fewer than 2 required sources succeed, write a skipped cycle entry and exit.
+Fetch all sources. The wrapper-aware price and position/safety snapshots govern
+whether the bot may act. CoinGecko global, funding rate, F&G, and OHLCV are
+soft or signal-supporting; failure is logged with bounded labels and does not
+silently create exposure. If the price is unavailable, write a skipped cycle
+entry; if direct safety data is incomplete, hold without acting.
 
 **Step 4 — Compute signal**
 Attempt to fetch OHLCV candles (Coinbase → Kraken fallback) and compute EMA(12/26) crossover
