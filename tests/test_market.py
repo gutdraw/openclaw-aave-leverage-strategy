@@ -217,7 +217,14 @@ def test_fetch_uses_aave_oracle_for_wrapper_entry_when_coingecko_is_blocked(
         "_fetch_funding_rate",
         lambda *args, **kwargs: (0.01, "okx", ("okx",), ()),
     )
-    monkeypatch.setattr("bot.onchain.fetch", lambda *args, **kwargs: onchain)
+    onchain_calls: list[dict] = []
+
+    def fake_onchain_fetch(*args, **kwargs):
+        del args
+        onchain_calls.append(kwargs)
+        return onchain
+
+    monkeypatch.setattr("bot.onchain.fetch", fake_onchain_fetch)
 
     class _MCP:
         wallet_address = "0x" + "0" * 40
@@ -236,6 +243,7 @@ def test_fetch_uses_aave_oracle_for_wrapper_entry_when_coingecko_is_blocked(
     assert data.price_entry_eligible is True
     assert data.price_protection_eligible is True
     assert failures == ["coingecko_prices:blocked_http_403"]
+    assert onchain_calls[0]["include_asset_price"] is True
 
 
 def test_fetch_returns_partial_data_when_all_price_sources_fail(

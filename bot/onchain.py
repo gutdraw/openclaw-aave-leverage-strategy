@@ -294,11 +294,14 @@ def fetch(
     borrow_asset: str = "USDC",
     short_asset: Optional[str] = None,
     user_address: Optional[str] = None,
+    include_asset_price: bool = False,
 ) -> OnChainData:
     """
     Fetch on-chain Aave v3 state from Base. Never raises — returns unavailable
     data on error so live callers can fail closed.
     A single Web3 connection is created per call (read-only, no wallet needed).
+    The optional oracle read is enabled only when the caller needs a fallback
+    price, avoiding extra RPC calls during healthy market-data cycles.
     """
     usdc_util = asset_util = recent_liq = None
     asset_frozen = asset_paused = borrow_frozen = borrow_paused = None
@@ -309,7 +312,8 @@ def fetch(
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
 
-        asset_price_usd = _aave_oracle_price_usd(w3, asset)
+        if include_asset_price:
+            asset_price_usd = _aave_oracle_price_usd(w3, asset)
         usdc_util = _utilization(w3, "USDC")
         asset_util = _utilization(w3, asset)
         recent_liq = _recent_liquidations(w3, lookback_blocks)

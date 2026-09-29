@@ -456,6 +456,7 @@ def fetch(
             borrow_asset="USDC",
             short_asset=short_borrow_asset,
             user_address=getattr(mcp_client, "wallet_address", None),
+            include_asset_price=price is None,
         )
     finally:
         _record_source(
