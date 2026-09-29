@@ -1,7 +1,7 @@
 """
 On-chain data fetcher — reads Aave v3 pool state directly from Base.
 
-Three signals, all read-only (eth_call / eth_getLogs), free public RPC:
+Four signals, all read-only (eth_call / eth_getLogs), free public RPC:
 
   1. USDC utilization  — varDebtToken.totalSupply() / aToken.totalSupply()
      Aave's interest rate curve has a sharp kink at the optimal utilization
@@ -20,6 +20,9 @@ Three signals, all read-only (eth_call / eth_getLogs), free public RPC:
      Both states mean we cannot close via flash loan and should exit
      while we still can.
 
+  4. Aave oracle price — the protocol's configured USD price for the trade
+     asset, used as a wrapper-aware fallback when public market data is down.
+
   All fields are Optional so callers can log partial results, but ``available``
   is false unless every safety read succeeds. Live callers must fail closed on
   an unavailable safety snapshot.
@@ -30,6 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Optional
 
 import httpx
@@ -39,6 +43,7 @@ log = logging.getLogger(__name__)
 
 # ── Aave v3 Base contract addresses (verified from wallet_reader.py) ──────────
 AAVE_POOL_BASE = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+AAVE_POOL_ADDRESSES_PROVIDER_BASE = "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D"
 
 # Underlying asset addresses on Base mainnet
 _ASSET_ADDR: dict[str, str] = {
@@ -133,6 +138,40 @@ _POOL_RISK_ABI = [
     },
 ]
 
+_POOL_ADDRESSES_PROVIDER_ABI = [
+    {
+        "inputs": [],
+        "name": "getPriceOracle",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    }
+]
+
+_PRICE_ORACLE_ABI = [
+    {
+        "inputs": [],
+        "name": "BASE_CURRENCY",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "BASE_CURRENCY_UNIT",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "asset", "type": "address"}],
+        "name": "getAssetPrice",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
 # Default lookback for eth_getLogs.
 # Base produces ~1 block/2s, so 150 blocks is approximately five minutes.
 # Requests are deliberately chunked to ten blocks for compatibility with strict
@@ -170,6 +209,10 @@ class OnChainData:
     emode_liquidation_threshold: Optional[float] = None
     risk_block: Optional[int] = None
     risk_fetched_at: Optional[str] = None
+    # Aave's configured oracle price in its USD base currency. This is kept
+    # separate from ``available`` because price can succeed while another
+    # safety read is unavailable.
+    asset_price_usd: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -260,11 +303,13 @@ def fetch(
     usdc_util = asset_util = recent_liq = None
     asset_frozen = asset_paused = borrow_frozen = borrow_paused = None
     short_asset_util = short_asset_frozen = short_asset_paused = None
+    asset_price_usd: Optional[float] = None
     risk: dict = {}
     borrow_risk: dict = {}
     try:
         w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
 
+        asset_price_usd = _aave_oracle_price_usd(w3, asset)
         usdc_util = _utilization(w3, "USDC")
         asset_util = _utilization(w3, asset)
         recent_liq = _recent_liquidations(w3, lookback_blocks)
@@ -327,7 +372,49 @@ def fetch(
         emode_liquidation_threshold=risk.get("emode_liquidation_threshold"),
         risk_block=risk.get("risk_block"),
         risk_fetched_at=risk.get("fetched_at"),
+        asset_price_usd=asset_price_usd,
     )
+
+
+def _aave_oracle_price_usd(w3: Web3, symbol: str) -> Optional[float]:
+    """Read the configured Aave USD oracle price for a known Base asset.
+
+    The addresses provider is resolved on every read so a governed oracle
+    update is picked up without a code/config deployment. Aave's interface
+    exposes the base currency and unit; accepting only the zero-address USD
+    base avoids accidentally treating an ETH-denominated oracle as dollars.
+    """
+    addr = asset_address(symbol)
+    if not addr:
+        return None
+    try:
+        provider = w3.eth.contract(
+            address=Web3.to_checksum_address(AAVE_POOL_ADDRESSES_PROVIDER_BASE),
+            abi=_POOL_ADDRESSES_PROVIDER_ABI,
+        )
+        oracle_address = provider.functions.getPriceOracle().call()
+        if not Web3.is_address(oracle_address):
+            return None
+
+        oracle = w3.eth.contract(
+            address=Web3.to_checksum_address(oracle_address),
+            abi=_PRICE_ORACLE_ABI,
+        )
+        base_currency = oracle.functions.BASE_CURRENCY().call()
+        if not Web3.is_address(base_currency) or int(base_currency, 16) != 0:
+            return None
+
+        unit = int(oracle.functions.BASE_CURRENCY_UNIT().call())
+        raw_price = int(
+            oracle.functions.getAssetPrice(Web3.to_checksum_address(addr)).call()
+        )
+        if unit <= 0 or raw_price <= 0:
+            return None
+        price = raw_price / unit
+        return price if isfinite(price) and price > 0 else None
+    except Exception as error:
+        log.debug("aave oracle price error for %s: %s", symbol, type(error).__name__)
+        return None
 
 
 def _utilization(w3: Web3, symbol: str) -> Optional[float]:

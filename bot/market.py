@@ -359,25 +359,6 @@ def fetch(
             source_started,
         )
 
-    # CoinGecko can be blocked independently of other public APIs. Keep a
-    # current exchange quote available for defensive reference, but do not use
-    # an underlying BTC/ETH quote to open a wrapper asset position.
-    if price is None:
-        fallback_price, fallback_provider, fallback_failures = _fetch_reference_price(
-            asset,
-            timeout,
-            source_observed_at,
-            source_fetch_duration_ms,
-        )
-        sources_failed.extend(fallback_failures)
-        price_failures.extend(fallback_failures)
-        if fallback_price is not None:
-            price = fallback_price
-            price_provider = fallback_provider
-            is_proxy = asset.casefold() in _UNDERLYING_PRICE_PROXY_ASSETS
-            price_entry_eligible = not is_proxy
-            price_protection_eligible = not is_proxy
-
     # ── Source 2: get_position (on-chain Aave state) ──────────────────────
     pos: Optional[dict] = None
     position_available = False
@@ -485,6 +466,39 @@ def fetch(
         )
     if not oc.available:
         sources_failed.append("onchain:all_fields_unavailable")
+
+    # CoinGecko can be blocked independently of other public APIs. Prefer the
+    # Aave protocol's own USD oracle when it is available: it values wrappers
+    # such as cbBTC directly and is the same valuation used for Aave risk.
+    # Exchange quotes remain reference-only for wrappers if both sources fail.
+    if price is None:
+        oracle_price = getattr(oc, "asset_price_usd", None)
+        if oracle_price is not None:
+            try:
+                price = _valid_price(oracle_price)
+            except (TypeError, ValueError):
+                price = None
+        if price is not None:
+            price_provider = "aave_oracle"
+            price_entry_eligible = True
+            price_protection_eligible = True
+        else:
+            fallback_price, fallback_provider, fallback_failures = (
+                _fetch_reference_price(
+                    asset,
+                    timeout,
+                    source_observed_at,
+                    source_fetch_duration_ms,
+                )
+            )
+            sources_failed.extend(fallback_failures)
+            price_failures.extend(fallback_failures)
+            if fallback_price is not None:
+                price = fallback_price
+                price_provider = fallback_provider
+                is_proxy = asset.casefold() in _UNDERLYING_PRICE_PROXY_ASSETS
+                price_entry_eligible = not is_proxy
+                price_protection_eligible = not is_proxy
 
     # ── Source 6: Fear & Greed Index (soft — failure logged, not blocking) ────
     fear_greed = None

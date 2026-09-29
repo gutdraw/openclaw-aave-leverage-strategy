@@ -4,6 +4,25 @@ import bot.onchain as onchain
 from bot.onchain import _reserve_configuration
 
 
+def test_aave_oracle_reads_usd_asset_price() -> None:
+    provider = MagicMock()
+    provider.functions.getPriceOracle.return_value.call.return_value = "0x" + "1" * 40
+    oracle = MagicMock()
+    oracle.functions.BASE_CURRENCY.return_value.call.return_value = "0x" + "0" * 40
+    oracle.functions.BASE_CURRENCY_UNIT.return_value.call.return_value = 10**8
+    oracle.functions.getAssetPrice.return_value.call.return_value = 8_357_467_000_000
+
+    web3 = MagicMock()
+    web3.eth.contract.side_effect = [provider, oracle]
+
+    result = onchain._aave_oracle_price_usd(web3, "cbBTC")
+
+    assert result == 83_574.67
+    provider.functions.getPriceOracle.return_value.call.assert_called_once()
+    oracle.functions.BASE_CURRENCY_UNIT.return_value.call.assert_called_once()
+    oracle.functions.getAssetPrice.return_value.call.assert_called_once()
+
+
 def test_reserve_configuration_decodes_live_risk_bits() -> None:
     config = 7300 | (7800 << 16) | (8 << 48) | (2 << 168)
     web3 = MagicMock()

@@ -8,6 +8,10 @@
   bounded provider telemetry. Underlying BTC/ETH quotes remain reference-only
   for cbBTC/wstETH, so they cannot create or increase wrapper exposure and do
   not drive wrapper TP/SL exits.
+- When CoinGecko is unavailable, the market fetcher now tries the current Aave
+  Base USD oracle before using exchange reference quotes. The oracle is
+  resolved through the live PoolAddressesProvider and restores wrapper-aware
+  cbBTC/wstETH entry and protection pricing without hardcoding an oracle.
 - A complete price outage now writes an auditable skipped cycle instead of
   crashing the loop. Open positions retain direct Aave liquidity, health-factor,
   and hard time-based protections when the chain snapshot can be reconciled.
